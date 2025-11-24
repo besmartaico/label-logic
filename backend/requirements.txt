@@ -1,6 +1,28 @@
 Flask
+Flask-Cors
+
+# Google API + OAuth
 google-api-python-client
 google-auth
 google-auth-oauthlib
 google-auth-httplib2
+
+# AI
 openai
+
+# Database / ORM
+sqlalchemy
+
+# Environment variables
+python-dotenv
+
+# If you're connecting to MySQL (you are, per previous app code)
+pymysql
+
+# For JSON validation and safer request handling
+requests
+
+# Optional but recommended for production-grade backend
+gunicorn
+
+mysql-connector-python

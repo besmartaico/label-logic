@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Label Logic – Rules</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+    rel="stylesheet"
+  />
+</head>
+
+<body class="bg-light">
+
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="/">Label Logic AI</a>
+    <div class="navbar-nav">
+      <a class="nav-link active" href="/rules">Rules</a>
+    </div>
+  </div>
+</nav>
+
+<div class="container">
+
+  <div class="row mb-4">
+    <div class="col">
+      <h1 class="h3">Email Label Rules</h1>
+      <p class="text-muted mb-0">
+        Create rules that automatically assign labels based on sender, subject, and body.
+      </p>
+    </div>
+  </div>
+
+  <!-- Run Labeler -->
+  <div class="card mb-4">
+    <div class="card-header">Run Labeler</div>
+    <div class="card-body">
+      <p class="text-muted">
+        Click below to scan inbox emails, apply rule-based labels, and auto-label the rest using AI.
+      </p>
+      <button class="btn btn-success" id="run-labeler-btn">Run Labeler Now</button>
+      <div id="run-labeler-status" class="mt-2 small text-muted"></div>
+    </div>
+  </div>
+
+  <!-- Learn from User Labels -->
+  <div class="card mb-4">
+    <div class="card-header">Learn from User Labels</div>
+    <div class="card-body">
+      <p class="text-muted">
+        If you drag emails into labels manually, click this to let Label Logic learn from those examples
+        and create new rules based on sender domains.
+      </p>
+      <button class="btn btn-outline-primary" id="learn-labels-btn">
+        Learn from User Labels
+      </button>
+      <div id="learn-labels-status" class="mt-2 small text-muted"></div>
+    </div>
+  </div>
+
+  <!-- Labels & Unread Counts -->
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>Labels &amp; Unread Counts</span>
+      <button class="btn btn-sm btn-outline-secondary" id="refresh-labels-btn">
+        Refresh Labels
+      </button>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-sm mb-0" id="labels-table">
+          <thead class="table-light">
+            <tr>
+              <th>Label</th>
+              <th class="text-end">Unread</th>
+              <th class="text-end">Total</th>
+              <th class="text-end">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td colspan="4" class="text-center text-muted small">
+                Click &quot;Refresh Labels&quot; to load Gmail labels.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div id="labels-status" class="p-2 small text-muted"></div>
+    </div>
+  </div>
+
+  <!-- Add Rule -->
+  <div class="card mb-4">
+    <div class="card-header">Add / Edit Rule</div>
+    <div class="card-body">
+
+      <div id="rule-status" class="mb-3 small text-muted"></div>
+
+      <form id="rule-form">
+        <input type="hidden" id="rule-id" />
+
+        <div class="mb-3">
+          <label class="form-label" for="label-select">Label</label>
+          <select id="label-select" class="form-select mb-2">
+            <option value="">-- Select existing label (optional) --</option>
+            <option value="__custom__">-- Custom label (type below) --</option>
+          </select>
+          <input
+            type="text"
+            id="label-name"
+            class="form-control"
+            placeholder="Label name"
+            required
+          />
+          <div class="form-text">
+            Choose an existing Gmail label or type a new label name.
+          </div>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label" for="from-contains">From contains</label>
+          <input type="text" id="from-contains" class="form-control" />
+          <div class="form-text">Match part of sender email (e.g., @stripe.com)</div>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label" for="subject-contains">Subject contains</label>
+          <input type="text" id="subject-contains" class="form-control" />
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label" for="body-contains">Body contains</label>
+          <input type="text" id="body-contains" class="form-control" />
+        </div>
+
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" id="is-active" checked />
+          <label class="form-check-label" for="is-active">Rule is active</label>
+        </div>
+
+        <div class="form-check mb-3">
+          <input class="form-check-input" type="checkbox" id="mark-as-read" />
+          <label class="form-check-label" for="mark-as-read">
+            Mark emails as read when this rule applies
+          </label>
+        </div>
+
+        <button type="submit" class="btn btn-primary me-2" id="save-btn">Save Rule</button>
+        <button type="button" class="btn btn-secondary" id="clear-btn">Clear Form</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Rules Table -->
+  <div class="card">
+    <div class="card-header">Existing Rules</div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-striped mb-0" id="rules-table">
+          <thead class="table-light">
+            <tr>
+              <th>ID</th>
+              <th>Label</th>
+              <th>From contains</th>
+              <th>Subject contains</th>
+              <th>Body contains</th>
+              <th>Active</th>
+              <th>Mark as read</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div><!-- container -->
+
+<script>
+/* ---------------------------
+   LOAD RULES INTO TABLE
+--------------------------- */
+async function fetchRules() {
+  const tbody = document.querySelector("#rules-table tbody");
+  tbody.innerHTML = "";
+
+  try {
+    const res = await fetch("/api/rules");
+    if (!res.ok) {
+      document.getElementById("rule-status").textContent =
+        `Error loading rules: ${res.status}`;
+      return;
+    }
+
+    const rules = await res.json();
+    if (!rules.length) {
+      tbody.innerHTML =
+        `<tr><td colspan="8" class="text-center text-muted">No rules yet. Add one above.</td></tr>`;
+      return;
+    }
+
+    rules.forEach(rule => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${rule.id}</td>
+        <td>${rule.label_name}</td>
+        <td>${rule.from_contains || ""}</td>
+        <td>${rule.subject_contains || ""}</td>
+        <td>${rule.body_contains || ""}</td>
+        <td>${rule.is_active ? "Yes" : "No"}</td>
+        <td>${rule.mark_as_read ? "Yes" : "No"}</td>
+        <td>
+          <button class="btn btn-sm btn-outline-primary me-1 edit-btn">Edit</button>
+          <button class="btn btn-sm btn-outline-danger delete-btn">Delete</button>
+        </td>
+      `;
+
+      /* Edit button */
+      tr.querySelector(".edit-btn").addEventListener("click", () => {
+        document.getElementById("rule-id").value = rule.id;
+        document.getElementById("label-name").value = rule.label_name;
+        document.getElementById("from-contains").value = rule.from_contains || "";
+        document.getElementById("subject-contains").value = rule.subject_contains || "";
+        document.getElementById("body-contains").value = rule.body_contains || "";
+        document.getElementById("is-active").checked = !!rule.is_active;
+        document.getElementById("mark-as-read").checked = !!rule.mark_as_read;
+        document.getElementById("save-btn").textContent = "Update Rule";
+
+        // Try to select the dropdown option that matches the label
+        const sel = document.getElementById("label-select");
+        if (sel) {
+          let matched = false;
+          for (const opt of sel.options) {
+            if (opt.value === rule.label_name) {
+              sel.value = rule.label_name;
+              matched = true;
+              break;
+            }
+          }
+          if (!matched) {
+            sel.value = "__custom__";
+          }
+        }
+      });
+
+      /* Delete button */
+      tr.querySelector(".delete-btn").addEventListener("click", async () => {
+        if (!confirm("Delete this rule?")) return;
+
+        const delRes = await fetch(`/api/rules/${rule.id}`, { method: "DELETE" });
+        if (!delRes.ok) {
+          document.getElementById("rule-status").textContent =
+            `Error deleting rule: ${delRes.status}`;
+          return;
+        }
+
+        document.getElementById("rule-status").textContent = "Rule deleted.";
+        fetchRules();
+      });
+
+      tbody.appendChild(tr);
+    });
+
+  } catch (err) {
+    document.getElementById("rule-status").textContent = "Error loading rules.";
+    console.error(err);
+  }
+}
+
+/* ---------------------------
+   SAVE RULE (CREATE/UPDATE)
+--------------------------- */
+document.getElementById("rule-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+
+  const payload = {
+    label_name: document.getElementById("label-name").value,
+    from_contains: document.getElementById("from-contains").value,
+    subject_contains: document.getElementById("subject-contains").value,
+    body_contains: document.getElementById("body-contains").value,
+    is_active: document.getElementById("is-active").checked,
+    mark_as_read: document.getElementById("mark-as-read").checked,
+  };
+
+  const ruleId = document.getElementById("rule-id").value;
+  const url = ruleId ? `/api/rules/${ruleId}` : "/api/rules";
+  const method = ruleId ? "PUT" : "POST";
+
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      document.getElementById("rule-status").textContent =
+        `Error saving rule: ${res.status}`;
+      return;
+    }
+
+    document.getElementById("rule-status").textContent =
+      ruleId ? "Rule updated." : "Rule created.";
+
+    clearForm();
+    fetchRules();
+
+  } catch (err) {
+    document.getElementById("rule-status").textContent = "Error saving rule.";
+    console.error(err);
+  }
+});
+
+/* ---------------------------
+   CLEAR FORM
+--------------------------- */
+function clearForm() {
+  document.getElementById("rule-id").value = "";
+  document.getElementById("label-name").value = "";
+  document.getElementById("from-contains").value = "";
+  document.getElementById("subject-contains").value = "";
+  document.getElementById("body-contains").value = "";
+  document.getElementById("is-active").checked = true;
+  document.getElementById("mark-as-read").checked = false;
+  document.getElementById("save-btn").textContent = "Save Rule";
+
+  const sel = document.getElementById("label-select");
+  if (sel) sel.value = "";
+}
+
+document.getElementById("clear-btn").addEventListener("click", clearForm);
+
+/* ---------------------------
+   RUN LABELER
+--------------------------- */
+document.getElementById("run-labeler-btn").addEventListener("click", async () => {
+  const status = document.getElementById("run-labeler-status");
+  status.textContent = "Running labeler…";
+
+  try {
+    const res = await fetch("/run-labeler", { method: "POST" });
+
+    if (!res.ok) {
+      status.textContent = `Error: ${res.status}`;
+      return;
+    }
+
+    const data = await res.json();
+    status.textContent =
+      `Done. Processed: ${data.processed}, ` +
+      `Rule-labeled: ${data.rule_labeled}, ` +
+      `AI-labeled: ${data.ai_labeled}.`;
+
+  } catch (err) {
+    status.textContent = "Error running labeler.";
+    console.error(err);
+  }
+});
+
+/* ---------------------------
+   LEARN FROM USER LABELS
+--------------------------- */
+document.getElementById("learn-labels-btn").addEventListener("click", async () => {
+  const status = document.getElementById("learn-labels-status");
+  status.textContent = "Learning from user labels…";
+
+  try {
+    const res = await fetch("/learn-from-user-labels", { method: "POST" });
+
+    if (!res.ok) {
+      status.textContent = `Error: ${res.status}`;
+      return;
+    }
+
+    const data = await res.json();
+    status.textContent =
+      `Learned from ${data.user_labeled_added} emails. ` +
+      `Created ${data.rules_created} new rules.`;
+
+    fetchRules();
+
+  } catch (err) {
+    status.textContent = "Error learning from user labels.";
+    console.error(err);
+  }
+});
+
+/* ---------------------------
+   LOAD GMAIL LABELS FOR DROPDOWN
+--------------------------- */
+async function loadGmailLabelOptions() {
+  const sel = document.getElementById("label-select");
+  if (!sel) return;
+
+  try {
+    const res = await fetch("/api/gmail-labels");
+    if (!res.ok) {
+      console.error("Error fetching Gmail labels for dropdown:", res.status);
+      return;
+    }
+
+    const labels = await res.json();
+
+    // Remove any previously loaded label options, keep the first two base options
+    while (sel.options.length > 2) {
+      sel.remove(2);
+    }
+
+    labels.forEach(label => {
+      if (!label.name) return;
+      const opt = document.createElement("option");
+      opt.value = label.name;
+      opt.textContent = label.name;
+      sel.appendChild(opt);
+    });
+  } catch (err) {
+    console.error("Error loading Gmail label options:", err);
+  }
+}
+
+// When dropdown changes, copy value into text box (unless custom)
+document.getElementById("label-select").addEventListener("change", (e) => {
+  const selVal = e.target.value;
+  const input = document.getElementById("label-name");
+  if (!input) return;
+
+  if (!selVal || selVal === "__custom__") {
+    // Leave text box alone for custom typing
+    return;
+  }
+  input.value = selVal;
+});
+
+/* ---------------------------
+   LABELS TABLE (UNREAD COUNTS)
+--------------------------- */
+async function fetchLabels() {
+  const tbody = document.querySelector("#labels-table tbody");
+  const status = document.getElementById("labels-status");
+  tbody.innerHTML = `
+    <tr>
+      <td colspan="4" class="text-center text-muted small">Loading labels…</td>
+    </tr>
+  `;
+  status.textContent = "";
+
+  try {
+    const res = await fetch("/api/labels");
+    if (!res.ok) {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="4" class="text-center text-danger small">
+            Error loading labels: ${res.status}
+          </td>
+        </tr>
+      `;
+      return;
+    }
+
+    const labels = await res.json();
+    if (!labels.length) {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="4" class="text-center text-muted small">
+            No labels found.
+          </td>
+        </tr>
+      `;
+      return;
+    }
+
+    tbody.innerHTML = "";
+    labels.forEach(label => {
+      const tr = document.createElement("tr");
+      const displayName = label.name === "UNREAD" ? "Unread" : label.name;
+
+      tr.innerHTML = `
+        <td>${displayName}</td>
+        <td class="text-end">${label.messagesUnread}</td>
+        <td class="text-end">${label.messagesTotal}</td>
+        <td class="text-end">
+          <button class="btn btn-sm btn-outline-primary mark-read-btn">
+            Mark all as read
+          </button>
+        </td>
+      `;
+
+      tr.querySelector(".mark-read-btn").addEventListener("click", async () => {
+        if (!confirm(`Mark all unread emails in "${displayName}" as read?`)) return;
+
+        status.textContent = `Marking unread emails in "${displayName}" as read…`;
+
+        try {
+          const res2 = await fetch(`/api/labels/${label.id}/mark-read`, {
+            method: "POST",
+          });
+          if (!res2.ok) {
+            status.textContent = `Error: ${res2.status}`;
+            return;
+          }
+          const data2 = await res2.json();
+          status.textContent = data2.message || "Done.";
+          fetchLabels(); // Refresh counts
+        } catch (err) {
+          status.textContent = "Error marking label as read.";
+          console.error(err);
+        }
+      });
+
+      tbody.appendChild(tr);
+    });
+
+  } catch (err) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="4" class="text-center text-danger small">
+          Error loading labels.
+        </td>
+      </tr>
+    `;
+    console.error(err);
+  }
+}
+
+/* ---------------------------
+   INITIAL PAGE LOAD & EVENTS
+--------------------------- */
+document.addEventListener("DOMContentLoaded", () => {
+  fetchRules();
+  loadGmailLabelOptions();
+
+  document
+    .getElementById("refresh-labels-btn")
+    .addEventListener("click", fetchLabels);
+});
+</script>
+
+</body>
+</html>

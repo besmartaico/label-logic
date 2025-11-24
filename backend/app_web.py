@@ -2,6 +2,7 @@ import os
 import re
 import sqlite3
 import base64
+import json
 from datetime import datetime
 
 from flask import (
@@ -11,13 +12,16 @@ from flask import (
     render_template,
     request,
     url_for,
+    session,
 )
 
 from dotenv import load_dotenv
 
-# Gmail API imports
+# Gmail / Google auth imports
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import Flow
+import google.oauth2.id_token as google_id_token
+import google.auth.transport.requests as google_requests
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -29,19 +33,28 @@ from openai import OpenAI
 # -------------------------------------------------
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "label_logic.db")  # keep existing DB
+DB_PATH = os.path.join(BASE_DIR, "label_logic.db")
 
-# Load environment variables from .env (if present)
 load_dotenv()
 
-# Gmail scopes – modify includes read access
+# Gmail scopes – allow reading, labeling, marking read
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
+
+# Load web OAuth credentials (created in Google Cloud Console)
+WEB_CREDS_PATH = os.path.join(BASE_DIR, "web_credentials.json")
+with open(WEB_CREDS_PATH, "r") as f:
+    web_creds = json.load(f)["web"]
+
+GOOGLE_CLIENT_ID = web_creds["client_id"]
+GOOGLE_CLIENT_SECRET = web_creds["client_secret"]
+# IMPORTANT: this must match your OAuth client in Google Cloud
+GOOGLE_REDIRECT_URI = "http://localhost:5000/oauth2callback"
 
 # OpenAI client
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-# Allowed AI labels (fixed set – you can tweak)
+# Fixed AI label set
 AI_LABELS = [
     "Priority",
     "Finance",
@@ -59,14 +72,12 @@ AI_LABELS = [
 ]
 AI_LABEL_MAP = {lbl.lower(): lbl for lbl in AI_LABELS}
 
-# -------------------------------------------------
 # Flask app
-# -------------------------------------------------
-
 app = Flask(__name__)
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-change-me")  # set real secret in prod
 
 # -------------------------------------------------
-# DB helpers & initialization
+# DB helpers & init
 # -------------------------------------------------
 
 
@@ -77,10 +88,6 @@ def get_db_connection():
 
 
 def ensure_rules_has_mark_as_read(cur):
-    """
-    Lightweight migration: if rules table exists but lacks mark_as_read,
-    add it with a default of 0.
-    """
     cur.execute("PRAGMA table_info(rules);")
     cols = [row[1] for row in cur.fetchall()]
     if "mark_as_read" not in cols:
@@ -90,24 +97,46 @@ def ensure_rules_has_mark_as_read(cur):
 
 
 def ensure_labeled_emails_has_source(cur):
-    """
-    Lightweight migration: if labeled_emails table exists but lacks source,
-    add it as TEXT.
-    """
     cur.execute("PRAGMA table_info(labeled_emails);")
     cols = [row[1] for row in cur.fetchall()]
     if "source" not in cols:
         cur.execute("ALTER TABLE labeled_emails ADD COLUMN source TEXT;")
 
 
+def ensure_user_id_columns(cur):
+    # rules.user_id
+    cur.execute("PRAGMA table_info(rules);")
+    cols = [row[1] for row in cur.fetchall()]
+    if "user_id" not in cols:
+        cur.execute("ALTER TABLE rules ADD COLUMN user_id INTEGER;")
+
+    # labeled_emails.user_id
+    cur.execute("PRAGMA table_info(labeled_emails);")
+    cols = [row[1] for row in cur.fetchall()]
+    if "user_id" not in cols:
+        cur.execute("ALTER TABLE labeled_emails ADD COLUMN user_id INTEGER;")
+
+
 def init_db():
-    """
-    Ensure required tables exist and run simple migrations.
-    """
     conn = get_db_connection()
     cur = conn.cursor()
 
-    # Stores applied labels for tracking
+    # Users table – one row per Google account
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            google_user_id TEXT UNIQUE,
+            email TEXT,
+            access_token TEXT,
+            refresh_token TEXT,
+            token_expiry TEXT,
+            created_at TEXT
+        );
+        """
+    )
+
+    # Labeled emails table (per user)
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS labeled_emails (
@@ -120,16 +149,18 @@ def init_db():
             applied_label TEXT,
             is_ai_labeled INTEGER DEFAULT 0,
             source TEXT,
-            created_at TEXT
+            created_at TEXT,
+            user_id INTEGER
         );
         """
     )
 
-    # Rules table
+    # Rules table (per user)
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS rules (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
             label_name TEXT NOT NULL,
             from_contains TEXT,
             subject_contains TEXT,
@@ -142,7 +173,7 @@ def init_db():
         """
     )
 
-    # Optional: store AI suggestions for analytics / review
+    # Optional – AI suggestion log (global)
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS ai_label_suggestions (
@@ -156,9 +187,10 @@ def init_db():
         """
     )
 
-    # Migrations
+    # Migrations (safe to run repeatedly)
     ensure_rules_has_mark_as_read(cur)
     ensure_labeled_emails_has_source(cur)
+    ensure_user_id_columns(cur)
 
     conn.commit()
     conn.close()
@@ -167,48 +199,68 @@ def init_db():
 init_db()
 
 # -------------------------------------------------
-# Gmail helpers
+# Auth helpers
 # -------------------------------------------------
 
 
-def get_gmail_service():
-    """
-    Returns an authorized Gmail API service using token.json / credentials.json.
-    """
-    token_path = os.path.join(BASE_DIR, "token.json")
-    creds = None
+def get_current_user_id():
+    return session.get("user_id")
 
-    if os.path.exists(token_path):
-        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
 
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            from google.auth.transport.requests import Request
+def get_gmail_service_for_user(user_id: int):
+    """Build a Gmail API client using tokens stored for this user."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE id = ?;", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        raise RuntimeError("User not found")
 
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                os.path.join(BASE_DIR, "credentials.json"),
-                SCOPES,
-            )
-            creds = flow.run_local_server(port=0)
+    creds = Credentials(
+        token=row["access_token"],
+        refresh_token=row["refresh_token"],
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=GOOGLE_CLIENT_ID,
+        client_secret=GOOGLE_CLIENT_SECRET,
+        scopes=SCOPES,
+    )
 
-        with open(token_path, "w") as token_file:
-            token_file.write(creds.to_json())
+    if not creds.valid and creds.refresh_token:
+        req = google_requests.Request()
+        creds.refresh(req)
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE users
+            SET access_token = ?, token_expiry = ?
+            WHERE id = ?;
+            """,
+            (
+                creds.token,
+                creds.expiry.isoformat() if creds.expiry else None,
+                user_id,
+            ),
+        )
+        conn.commit()
+        conn.close()
 
     return build("gmail", "v1", credentials=creds)
 
 
+# -------------------------------------------------
+# Email helpers
+# -------------------------------------------------
+
+
 def get_or_create_gmail_label(service, label_name):
-    """
-    Return the Gmail label ID for label_name, creating it if needed.
-    """
     resp = service.users().labels().list(userId="me").execute()
     for lbl in resp.get("labels", []):
         if lbl["name"] == label_name:
             return lbl["id"]
 
-    # Create label if not found
     new_label = (
         service.users()
         .labels()
@@ -232,12 +284,6 @@ def apply_label_to_message(
     remove_from_inbox=False,
     mark_as_read=False,
 ):
-    """
-    Apply a label to a Gmail message by ID.
-    Optionally:
-      - remove it from INBOX (archive)
-      - mark it as read (remove UNREAD)
-    """
     label_id = get_or_create_gmail_label(service, label_name)
     if not label_id:
         return
@@ -249,7 +295,6 @@ def apply_label_to_message(
         remove_ids.append("INBOX")
     if mark_as_read:
         remove_ids.append("UNREAD")
-
     if remove_ids:
         body["removeLabelIds"] = remove_ids
 
@@ -259,10 +304,6 @@ def apply_label_to_message(
 
 
 def extract_email_fields(message):
-    """
-    Given a Gmail message resource (format='full'),
-    extract sender, subject, snippet, simple text body.
-    """
     headers = message.get("payload", {}).get("headers", [])
     header_map = {h["name"].lower(): h["value"] for h in headers}
 
@@ -298,10 +339,6 @@ def extract_email_fields(message):
 
 
 def email_matches_rule(sender, subject, body, rule):
-    """
-    OR-based matching:
-    If any of from/subject/body contains the rule's text, it's a match.
-    """
     s_from = (sender or "").lower()
     s_subject = (subject or "").lower()
     s_body = (body or "").lower()
@@ -316,15 +353,10 @@ def email_matches_rule(sender, subject, body, rule):
         return True
     if body_term and body_term in s_body:
         return True
-
     return False
 
 
 def ai_suggest_label(sender, subject, body):
-    """
-    Use OpenAI Chat Completions (gpt-4o) to suggest a label
-    from a fixed set. Return (label, confidence) or (None, 0.0).
-    """
     if not openai_client or not OPENAI_API_KEY:
         return None, 0.0
 
@@ -361,8 +393,7 @@ Respond with only the label text (exactly as in the list) or 'None'.
         norm = AI_LABEL_MAP.get(raw.lower())
         if not norm or norm == "None":
             return None, 0.0
-
-        confidence = 0.75  # placeholder
+        confidence = 0.75  # simple placeholder
         return norm, confidence
     except Exception as e:
         print("Error from OpenAI:", e)
@@ -376,12 +407,10 @@ def record_labeled_email(
     subject,
     snippet,
     label,
+    user_id,
     is_ai_labeled=False,
     source=None,
 ):
-    """
-    Insert or update a record in labeled_emails.
-    """
     conn = get_db_connection()
     cur = conn.cursor()
     now = datetime.utcnow().isoformat(timespec="seconds")
@@ -390,9 +419,9 @@ def record_labeled_email(
         """
         INSERT INTO labeled_emails (
             gmail_id, thread_id, sender, subject, snippet,
-            applied_label, is_ai_labeled, source, created_at
+            applied_label, is_ai_labeled, source, created_at, user_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(gmail_id) DO UPDATE SET
             thread_id = excluded.thread_id,
             sender = excluded.sender,
@@ -400,7 +429,8 @@ def record_labeled_email(
             snippet = excluded.snippet,
             applied_label = excluded.applied_label,
             is_ai_labeled = excluded.is_ai_labeled,
-            source = excluded.source;
+            source = excluded.source,
+            user_id = excluded.user_id;
         """,
         (
             gmail_id,
@@ -412,6 +442,7 @@ def record_labeled_email(
             1 if is_ai_labeled else 0,
             source,
             now,
+            user_id,
         ),
     )
 
@@ -420,13 +451,9 @@ def record_labeled_email(
 
 
 def record_ai_suggestion(gmail_id, label, confidence):
-    """
-    Store an AI suggestion in ai_label_suggestions for analytics.
-    """
     conn = get_db_connection()
     cur = conn.cursor()
     now = datetime.utcnow().isoformat(timespec="seconds")
-
     cur.execute(
         """
         INSERT INTO ai_label_suggestions (gmail_id, suggested_label, confidence, accepted, created_at)
@@ -434,7 +461,6 @@ def record_ai_suggestion(gmail_id, label, confidence):
         """,
         (gmail_id, label, confidence, 1, now),
     )
-
     conn.commit()
     conn.close()
 
@@ -452,13 +478,101 @@ def extract_domain_from_sender(sender):
 
 
 # -------------------------------------------------
-# Basic pages & status
+# Basic routes & auth
 # -------------------------------------------------
 
 
 @app.route("/")
 def index():
+    if "user_id" not in session:
+        return redirect(url_for("login"))
     return redirect(url_for("rules_page"))
+
+
+@app.route("/login")
+def login():
+    flow = Flow.from_client_secrets_file(
+        WEB_CREDS_PATH,
+        scopes=SCOPES,
+        redirect_uri=GOOGLE_REDIRECT_URI,
+    )
+    authorization_url, state = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",  # forces refresh_token at least once
+    )
+    session["oauth_state"] = state
+    return redirect(authorization_url)
+
+
+@app.route("/oauth2callback")
+def oauth2callback():
+    state = session.get("oauth_state")
+    if not state:
+        return "Missing OAuth state in session", 400
+
+    flow = Flow.from_client_secrets_file(
+        WEB_CREDS_PATH,
+        scopes=SCOPES,
+        redirect_uri=GOOGLE_REDIRECT_URI,
+        state=state,
+    )
+    flow.fetch_token(authorization_response=request.url)
+    creds = flow.credentials
+
+    # Get Google user info
+    request_session = google_requests.Request()
+    id_info = google_id_token.verify_oauth2_token(
+        creds.id_token, request_session, GOOGLE_CLIENT_ID
+    )
+
+    google_user_id = id_info["sub"]
+    email = id_info.get("email")
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    now = datetime.utcnow().isoformat(timespec="seconds")
+
+    cur.execute(
+        """
+        INSERT INTO users
+        (google_user_id, email, access_token, refresh_token, token_expiry, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(google_user_id) DO UPDATE SET
+            email = excluded.email,
+            access_token = excluded.access_token,
+            refresh_token = excluded.refresh_token,
+            token_expiry = excluded.token_expiry;
+        """,
+        (
+            google_user_id,
+            email,
+            creds.token,
+            creds.refresh_token,
+            creds.expiry.isoformat() if creds.expiry else None,
+            now,
+        ),
+    )
+
+    cur.execute(
+        "SELECT id FROM users WHERE google_user_id = ?;",
+        (google_user_id,),
+    )
+    row = cur.fetchone()
+    conn.commit()
+    conn.close()
+
+    user_id = row["id"]
+    session["user_id"] = user_id
+    session["email"] = email
+
+    return redirect(url_for("rules_page"))
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
 
 
 @app.route("/health")
@@ -469,23 +583,27 @@ def health():
 @app.route("/ai-status")
 def ai_status():
     return jsonify(
-        {
-            "has_api_key": bool(OPENAI_API_KEY),
-            "allowed_labels": AI_LABELS,
-        }
+        {"has_api_key": bool(OPENAI_API_KEY), "allowed_labels": AI_LABELS}
     )
 
 
 # -------------------------------------------------
-# Simple API: labeled emails count
+# Labeled emails count (per-user)
 # -------------------------------------------------
 
 
 @app.route("/api/labeled-emails-count", methods=["GET"])
 def api_labeled_emails_count():
+    user_id = get_current_user_id()
+    if not user_id:
+        return jsonify({"error": "Not logged in"}), 401
+
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM labeled_emails;")
+    cur.execute(
+        "SELECT COUNT(*) FROM labeled_emails WHERE user_id = ? OR user_id IS NULL;",
+        (user_id,),
+    )
     row = cur.fetchone()
     conn.close()
     count = row[0] if row else 0
@@ -493,13 +611,15 @@ def api_labeled_emails_count():
 
 
 # -------------------------------------------------
-# Rules GUI
+# Rules GUI & API
 # -------------------------------------------------
 
 
 @app.route("/rules", methods=["GET"])
 def rules_page():
-    return render_template("rules.html")
+    if "user_id" not in session:
+        return redirect(url_for("login"))
+    return render_template("rules.html", user_email=session.get("email"))
 
 
 def db_row_to_rule(row):
@@ -514,38 +634,47 @@ def db_row_to_rule(row):
     }
 
 
-def load_active_rules():
+def load_active_rules(user_id):
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute(
         """
         SELECT * FROM rules
         WHERE is_active = 1
+          AND (user_id = ? OR user_id IS NULL)
         ORDER BY id;
-        """
+        """,
+        (user_id,),
     )
     rows = cur.fetchall()
     conn.close()
     return [db_row_to_rule(r) for r in rows]
 
 
-# ---- Rules API ----
-
-
 @app.route("/api/rules", methods=["GET"])
 def api_get_rules():
+    user_id = get_current_user_id()
+    if not user_id:
+        return jsonify({"error": "Not logged in"}), 401
+
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM rules ORDER BY id;")
+    cur.execute(
+        "SELECT * FROM rules WHERE user_id = ? OR user_id IS NULL ORDER BY id;",
+        (user_id,),
+    )
     rows = cur.fetchall()
     conn.close()
-
     rules = [db_row_to_rule(r) for r in rows]
     return jsonify(rules)
 
 
 @app.route("/api/rules", methods=["POST"])
 def api_create_rule():
+    user_id = get_current_user_id()
+    if not user_id:
+        return jsonify({"error": "Not logged in"}), 401
+
     data = request.get_json() or {}
     label_name = (data.get("label_name") or "").strip()
     from_contains = (data.get("from_contains") or "").strip()
@@ -564,11 +693,12 @@ def api_create_rule():
     cur.execute(
         """
         INSERT INTO rules
-        (label_name, from_contains, subject_contains, body_contains,
+        (user_id, label_name, from_contains, subject_contains, body_contains,
          is_active, mark_as_read, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
         """,
         (
+            user_id,
             label_name,
             from_contains,
             subject_contains,
@@ -601,6 +731,10 @@ def api_create_rule():
 
 @app.route("/api/rules/<int:rule_id>", methods=["PUT"])
 def api_update_rule(rule_id):
+    user_id = get_current_user_id()
+    if not user_id:
+        return jsonify({"error": "Not logged in"}), 401
+
     data = request.get_json() or {}
     label_name = data.get("label_name")
     from_contains = data.get("from_contains")
@@ -679,6 +813,10 @@ def api_update_rule(rule_id):
 
 @app.route("/api/rules/<int:rule_id>", methods=["DELETE"])
 def api_delete_rule(rule_id):
+    user_id = get_current_user_id()
+    if not user_id:
+        return jsonify({"error": "Not logged in"}), 401
+
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("DELETE FROM rules WHERE id = ?;", (rule_id,))
@@ -688,15 +826,18 @@ def api_delete_rule(rule_id):
 
 
 # -------------------------------------------------
-# Gmail labels for UI (dropdown + unread table)
+# Gmail labels – dropdown & unread counts
 # -------------------------------------------------
 
 
 @app.route("/api/gmail-labels", methods=["GET"])
 def api_gmail_labels():
-    """Return user-created Gmail labels for use in the Label Name dropdown."""
+    user_id = get_current_user_id()
+    if not user_id:
+        return jsonify({"error": "Not logged in"}), 401
+
     try:
-        service = get_gmail_service()
+        service = get_gmail_service_for_user(user_id)
     except Exception as e:
         return jsonify({"error": f"Gmail auth failed: {e}"}), 500
 
@@ -716,9 +857,12 @@ def api_gmail_labels():
 
 @app.route("/api/labels", methods=["GET"])
 def api_get_labels():
-    """Return filtered Gmail labels with unread and total counts."""
+    user_id = get_current_user_id()
+    if not user_id:
+        return jsonify({"error": "Not logged in"}), 401
+
     try:
-        service = get_gmail_service()
+        service = get_gmail_service_for_user(user_id)
     except Exception as e:
         return jsonify({"error": f"Gmail auth failed: {e}"}), 500
 
@@ -762,13 +906,16 @@ def api_get_labels():
 
 @app.route("/api/labels/<label_id>/mark-read", methods=["POST"])
 def api_mark_label_read(label_id):
-    """Mark all UNREAD messages in a given label as read (remove UNREAD)."""
+    user_id = get_current_user_id()
+    if not user_id:
+        return jsonify({"error": "Not logged in"}), 401
+
     try:
-        service = get_gmail_service()
+        service = get_gmail_service_for_user(user_id)
     except Exception as e:
         return jsonify({"error": f"Gmail auth failed: {e}"}), 500
 
-    user_id = "me"
+    user = "me"
     all_ids = []
     page_token = None
 
@@ -778,17 +925,15 @@ def api_mark_label_read(label_id):
                 service.users()
                 .messages()
                 .list(
-                    userId=user_id,
+                    userId=user,
                     labelIds=[label_id, "UNREAD"],
                     pageToken=page_token,
                     maxResults=500,
                 )
                 .execute()
             )
-
             messages = resp.get("messages", [])
             all_ids.extend(m["id"] for m in messages)
-
             page_token = resp.get("nextPageToken")
             if not page_token:
                 break
@@ -809,7 +954,7 @@ def api_mark_label_read(label_id):
         for i in range(0, len(all_ids), CHUNK_SIZE):
             chunk = all_ids[i : i + CHUNK_SIZE]
             service.users().messages().batchModify(
-                userId=user_id,
+                userId=user,
                 body={"ids": chunk, "removeLabelIds": ["UNREAD"]},
             ).execute()
     except HttpError as e:
@@ -825,27 +970,22 @@ def api_mark_label_read(label_id):
 
 
 # -------------------------------------------------
-# Run labeler – rules + AI
+# Run labeler – rules + AI (per-user)
 # -------------------------------------------------
 
 
 @app.route("/run-labeler", methods=["POST"])
 def run_labeler():
-    """
-    Scan recent INBOX emails and:
-      1) Apply rule-based labels (OR logic across fields)
-      2) If no rule matches, apply AI label
-    For both rule and AI labels:
-      - Remove from INBOX (archive) as requested
-      - Optionally mark as read when rule.mark_as_read = True
-    AI-labeled emails are removed from INBOX but left unread.
-    """
+    user_id = get_current_user_id()
+    if not user_id:
+        return jsonify({"error": "Not logged in"}), 401
+
     try:
-        service = get_gmail_service()
+        service = get_gmail_service_for_user(user_id)
     except Exception as e:
         return jsonify({"error": f"Gmail auth failed: {e}"}), 500
 
-    rules = load_active_rules()
+    rules = load_active_rules(user_id)
     rule_count = 0
     ai_count = 0
     total = 0
@@ -879,10 +1019,10 @@ def run_labeler():
         sender, subject, snippet, body = extract_email_fields(full)
         thread_id = full.get("threadId", "")
 
-        # 1) Try rule-based label
         matched_label = None
         matched_rule_mark_read = False
 
+        # 1) Try rules
         for rule in rules:
             if email_matches_rule(sender, subject, body, rule):
                 matched_label = rule["label_name"]
@@ -901,6 +1041,7 @@ def run_labeler():
                     subject,
                     snippet,
                     matched_label,
+                    user_id=user_id,
                     is_ai_labeled=False,
                     source="rule",
                 )
@@ -915,7 +1056,7 @@ def run_labeler():
                     service,
                     gmail_id,
                     label,
-                    remove_from_inbox=True,  # <-- also remove AI labeled from INBOX
+                    remove_from_inbox=True,
                     mark_as_read=False,
                 )
                 record_labeled_email(
@@ -925,6 +1066,7 @@ def run_labeler():
                     subject,
                     snippet,
                     label,
+                    user_id=user_id,
                     is_ai_labeled=True,
                     source="ai",
                 )
@@ -942,46 +1084,46 @@ def run_labeler():
 
 
 # -------------------------------------------------
-# Learn from user labels
+# Learn from user labels (per-user)
 # -------------------------------------------------
 
 
 @app.route("/learn-from-user-labels", methods=["POST"])
 def learn_from_user_labels():
-    """
-    1) Look for messages in Gmail that have user-created labels
-       but are not in labeled_emails yet → treat them as user-labeled.
-    2) Insert them into labeled_emails with source='user'.
-    3) For each (label, domain) pair that appears often enough,
-       auto-create a from_contains rule on that domain.
-    """
+    user_id = get_current_user_id()
+    if not user_id:
+        return jsonify({"error": "Not logged in"}), 401
+
     try:
-        service = get_gmail_service()
+        service = get_gmail_service_for_user(user_id)
     except Exception as e:
         return jsonify({"error": f"Gmail auth failed: {e}"}), 500
 
     conn = get_db_connection()
     cur = conn.cursor()
 
-    # All gmail_ids we already know
-    cur.execute("SELECT gmail_id FROM labeled_emails;")
+    # Existing gmail_ids for this user (or legacy null user_id)
+    cur.execute(
+        "SELECT gmail_id FROM labeled_emails WHERE user_id = ? OR user_id IS NULL;",
+        (user_id,),
+    )
     existing_ids = {row["gmail_id"] for row in cur.fetchall()}
 
-    user_id = "me"
-    label_list_resp = service.users().labels().list(userId=user_id).execute()
+    user = "me"
+    label_list_resp = service.users().labels().list(userId=user).execute()
     labels = label_list_resp.get("labels", [])
 
     user_label_ids = [lbl["id"] for lbl in labels if lbl.get("type") == "user"]
 
     user_labeled_added = 0
 
-    # For each user label, find some messages
+    # 1) Pull user-labeled emails from Gmail into labeled_emails
     for lid in user_label_ids:
         try:
             msg_list = (
                 service.users()
                 .messages()
-                .list(userId=user_id, labelIds=[lid], maxResults=50)
+                .list(userId=user, labelIds=[lid], maxResults=50)
                 .execute()
             )
         except HttpError as e:
@@ -997,7 +1139,7 @@ def learn_from_user_labels():
                 full = (
                     service.users()
                     .messages()
-                    .get(userId=user_id, id=gmail_id, format="full")
+                    .get(userId=user, id=gmail_id, format="full")
                     .execute()
                 )
             except HttpError as e:
@@ -1007,7 +1149,6 @@ def learn_from_user_labels():
             sender, subject, snippet, body = extract_email_fields(full)
             thread_id = full.get("threadId", "")
 
-            # Determine label name
             lbl_name = None
             for lbl in labels:
                 if lbl["id"] == lid:
@@ -1023,23 +1164,25 @@ def learn_from_user_labels():
                 subject,
                 snippet,
                 lbl_name,
+                user_id=user_id,
                 is_ai_labeled=False,
                 source="user",
             )
             existing_ids.add(gmail_id)
             user_labeled_added += 1
 
-    # Build (label, domain) counts from user-labeled emails
+    # 2) From those labeled emails, learn (label, domain) patterns
     cur.execute(
         """
         SELECT sender, applied_label
         FROM labeled_emails
-        WHERE source = 'user';
-        """
+        WHERE source = 'user' AND (user_id = ? OR user_id IS NULL);
+        """,
+        (user_id,),
     )
     rows = cur.fetchall()
 
-    domain_counts = {}  # {(label, domain): count}
+    domain_counts = {}
     for row in rows:
         sender = row["sender"]
         label = row["applied_label"]
@@ -1059,12 +1202,13 @@ def learn_from_user_labels():
         cur.execute(
             """
             SELECT 1 FROM rules
-            WHERE label_name = ?
+            WHERE (user_id = ? OR user_id IS NULL)
+              AND label_name = ?
               AND from_contains = ?
               AND is_active = 1
             LIMIT 1;
             """,
-            (label, f"@{domain}"),
+            (user_id, label, f"@{domain}"),
         )
         exists = cur.fetchone()
         if exists:
@@ -1074,11 +1218,11 @@ def learn_from_user_labels():
         cur.execute(
             """
             INSERT INTO rules
-            (label_name, from_contains, subject_contains, body_contains,
+            (user_id, label_name, from_contains, subject_contains, body_contains,
              is_active, mark_as_read, created_at, updated_at)
-            VALUES (?, ?, '', '', 1, 0, ?, ?);
+            VALUES (?, ?, ?, '', '', 1, 0, ?, ?);
             """,
-            (label, f"@{domain}", now, now),
+            (user_id, label, f"@{domain}", now, now),
         )
         rules_created += 1
 
