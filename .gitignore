@@ -235,4 +235,6 @@ backend/web_credentials.json
 # Personal notes
 backend/notes.txt
 
+backend/credentials*.json
+
 

@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Label Logic – Relabel</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+    rel="stylesheet"
+  />
+</head>
+
+<body class="bg-light">
+
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="#">Label Logic</a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navMain">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="navMain">
+      <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+        <li class="nav-item">
+          <a class="nav-link" href="/rules">Rules</a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link active" aria-current="page" href="/relabel">Relabel</a>
+        </li>
+      </ul>
+    </div>
+  </div>
+</nav>
+
+<div class="container">
+
+  <div class="card mb-4">
+    <div class="card-header">
+      Relabel Messages
+    </div>
+    <div class="card-body">
+      <p class="small text-muted mb-2">
+        For each label below, choose a <strong>target label</strong> and click
+        <strong>Relabel</strong> to move all messages from the source label into
+        the target label. This will:
+      </p>
+      <ul class="small text-muted">
+        <li>Add the target label to each message.</li>
+        <li>Remove the source label from those messages.</li>
+        <li>Messages themselves are not deleted or archived.</li>
+      </ul>
+      <div id="relabel-status" class="small text-primary fw-semibold"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>Current Labels</span>
+      <button class="btn btn-sm btn-outline-secondary" id="refresh-labels-btn">
+        Refresh
+      </button>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-sm mb-0" id="labels-table">
+          <thead class="table-light">
+            <tr>
+              <th>Source Label</th>
+              <th class="text-end">Unread</th>
+              <th class="text-end">Total</th>
+              <th style="width: 250px;">Target Label</th>
+              <th class="text-end" style="width: 140px;">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td colspan="5" class="text-center text-muted small">
+                Loading labels…
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+let targetLabelOptions = [];
+
+async function loadTargetLabelOptions() {
+  try {
+    const res = await fetch("/api/gmail-labels");
+    if (!res.ok) {
+      console.error("Error fetching gmail labels:", res.status);
+      return;
+    }
+    const labels = await res.json();
+    targetLabelOptions = labels.map(l => l.name).filter(Boolean);
+  } catch (err) {
+    console.error("Error loading gmail label options:", err);
+  }
+}
+
+function buildTargetSelect(defaultValue = "") {
+  const sel = document.createElement("select");
+  sel.className = "form-select form-select-sm";
+
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "-- choose target --";
+  sel.appendChild(placeholder);
+
+  targetLabelOptions.forEach(name => {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    if (name === defaultValue) {
+      opt.selected = true;
+    }
+    sel.appendChild(opt);
+  });
+
+  return sel;
+}
+
+async function fetchLabelsForRelabel() {
+  const tbody = document.querySelector("#labels-table tbody");
+  const status = document.getElementById("relabel-status");
+
+  tbody.innerHTML = `
+    <tr>
+      <td colspan="5" class="text-center text-muted small">Loading labels…</td>
+    </tr>
+  `;
+  status.textContent = "";
+
+  try {
+    const res = await fetch("/api/labels");
+    if (!res.ok) {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="5" class="text-center text-danger small">
+            Error loading labels: ${res.status}
+          </td>
+        </tr>
+      `;
+      return;
+    }
+
+    const labels = await res.json();
+    if (!labels.length) {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="5" class="text-center text-muted small">
+            No labels found.
+          </td>
+        </tr>
+      `;
+      return;
+    }
+
+    tbody.innerHTML = "";
+    labels.forEach(label => {
+      const tr = document.createElement("tr");
+      const name = label.name;
+
+      const nameTd = document.createElement("td");
+      nameTd.textContent = name;
+
+      const unreadTd = document.createElement("td");
+      unreadTd.className = "text-end";
+      unreadTd.textContent = label.messagesUnread;
+
+      const totalTd = document.createElement("td");
+      totalTd.className = "text-end";
+      totalTd.textContent = label.messagesTotal;
+
+      const targetTd = document.createElement("td");
+      const sel = buildTargetSelect();
+      targetTd.appendChild(sel);
+
+      const actionTd = document.createElement("td");
+      actionTd.className = "text-end";
+      const btn = document.createElement("button");
+      btn.className = "btn btn-sm btn-outline-primary";
+      btn.textContent = "Relabel";
+      btn.addEventListener("click", async () => {
+        const targetLabel = sel.value;
+        if (!targetLabel) {
+          alert("Please choose a target label first.");
+          return;
+        }
+        if (!confirm(`Move all messages from "${name}" to "${targetLabel}"?`)) {
+          return;
+        }
+
+        status.textContent = `Relabeling messages from "${name}" to "${targetLabel}"…`;
+
+        try {
+          const res2 = await fetch("/api/relabel", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              source_label: name,
+              target_label: targetLabel,
+            }),
+          });
+
+          if (!res2.ok) {
+            status.textContent = `Error relabeling: ${res2.status}`;
+            return;
+          }
+
+          const data2 = await res2.json();
+          status.textContent =
+            `Relabeled ${data2.updated} messages from "${data2.source_label}" to "${data2.target_label}".`;
+          fetchLabelsForRelabel();
+        } catch (err) {
+          console.error(err);
+          status.textContent = "Error relabeling messages.";
+        }
+      });
+      actionTd.appendChild(btn);
+
+      tr.appendChild(nameTd);
+      tr.appendChild(unreadTd);
+      tr.appendChild(totalTd);
+      tr.appendChild(targetTd);
+      tr.appendChild(actionTd);
+
+      tbody.appendChild(tr);
+    });
+
+  } catch (err) {
+    console.error(err);
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="5" class="text-center text-danger small">
+          Error loading labels.
+        </td>
+      </tr>
+    `;
+  }
+}
+
+document.addEventListener("DOMContentLoaded", async () => {
+  await loadTargetLabelOptions();
+  fetchLabelsForRelabel();
+
+  const refreshBtn = document.getElementById("refresh-labels-btn");
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", async () => {
+      await loadTargetLabelOptions();
+      fetchLabelsForRelabel();
+    });
+  }
+});
+</script>
+
+</body>
+</html>

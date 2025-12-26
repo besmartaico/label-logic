@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block title %}Label Logic – Relabel{% endblock %}
+
+{% block content %}
+
+<div class="card mb-4">
+  <div class="card-header">
+    Relabel Messages
+  </div>
+  <div class="card-body">
+    <p class="small text-muted mb-2">
+      For each label below, choose a <strong>target label</strong> and click
+      <strong>Relabel</strong> to move all messages from the source label into
+      the target label. This will:
+    </p>
+    <ul class="small text-muted">
+      <li>Add the target label to each message.</li>
+      <li>Remove the source label from those messages.</li>
+      <li>Messages themselves are not deleted or archived.</li>
+    </ul>
+    <div id="relabel-status" class="small text-primary fw-semibold"></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span>Current Labels</span>
+    <button class="btn btn-sm btn-outline-secondary" id="refresh-labels-btn">
+      Refresh
+    </button>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-sm mb-0" id="labels-table">
+        <thead class="table-light">
+          <tr>
+            <th>Source Label</th>
+            <th class="text-end">Unread</th>
+            <th class="text-end">Total</th>
+            <th style="width: 250px;">Target Label</th>
+            <th class="text-end" style="width: 140px;">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td colspan="5" class="text-center text-muted small">
+              Loading labels…
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='relabel.js') }}"></script>
+{% endblock %}
