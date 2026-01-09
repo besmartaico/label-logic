@@ -53,14 +53,14 @@ def _get_redirect_uri() -> str:
 
     Priority:
     1) If GOOGLE_OAUTH_REDIRECT_URI is set, use it (explicit override).
-    2) Otherwise build from the current request host (works locally + Render).
+    2) Otherwise build from the current request host (works locally + Railway/Render).
     """
     forced = os.environ.get("GOOGLE_OAUTH_REDIRECT_URI", "").strip()
     if forced:
         return forced
 
     # Build from the request host so we never accidentally redirect to localhost in production.
-    # Example on Render: https://your-app.onrender.com/oauth2callback
+    # Example on Railway: https://your-app.up.railway.app/oauth2callback
     return request.url_root.rstrip("/") + url_for("misc.oauth2callback")
 
 
@@ -134,7 +134,7 @@ def oauth2callback():
         logger.exception("Failed to build OAuth flow in /oauth2callback")
         return jsonify({"error": str(e)}), 500
 
-    # After ProxyFix, request.url should reflect the correct scheme/host.
+    # After ProxyFix (in app.py), request.url should reflect the correct scheme/host.
     flow.fetch_token(authorization_response=request.url)
     creds = flow.credentials
 
@@ -167,6 +167,55 @@ def oauth2callback():
 def logout():
     session.clear()
     return redirect(url_for("misc.auth_google"))
+
+
+# -------------------------------------------------------------------
+# Debug routes (temporary; remove once resolved)
+# -------------------------------------------------------------------
+
+@misc_bp.route("/debug/session", methods=["GET"])
+def debug_session():
+    """
+    Confirms whether the browser session contains the expected values after OAuth.
+    """
+    return jsonify(
+        {
+            "google_user_id": session.get("google_user_id"),
+            "email": session.get("email"),
+            "has_state": bool(session.get("state")),
+            "cookies_present": bool(request.headers.get("Cookie")),
+            "host": request.host,
+            "url_root": request.url_root,
+            "scheme": request.scheme,
+        }
+    )
+
+
+@misc_bp.route("/debug/creds", methods=["GET"])
+def debug_creds():
+    """
+    Confirms whether we can find stored credentials for the current session user in the DB.
+    """
+    uid = session.get("google_user_id")
+    if not uid:
+        return jsonify({"error": "no session google_user_id"}), 401
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT email FROM credentials WHERE google_user_id = ?",
+        (uid,),
+    )
+    row = cur.fetchone()
+    conn.close()
+
+    return jsonify(
+        {
+            "google_user_id": uid,
+            "found_in_db": bool(row),
+            "db_email": row["email"] if row else None,
+        }
+    )
 
 
 @misc_bp.route("/api/labeled-emails-count", methods=["GET"])
