@@ -243,6 +243,28 @@ def labeled_emails_count():
     conn.close()
     count = row[0] if row else 0
     return jsonify({"count": count, "status": "Fetched labeled emails"})
+    
+@misc_bp.route("/debug/db-path", methods=["GET"])
+def debug_db_path():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("PRAGMA database_list;")
+        rows = cur.fetchall()
+        conn.close()
+
+        # rows usually look like: [(seq, name, file), ...]
+        # sqlite3 Row may be dict-like depending on your connection settings
+        dbs = []
+        for r in rows:
+            try:
+                dbs.append({"seq": r[0], "name": r[1], "file": r[2]})
+            except Exception:
+                dbs.append(dict(r))
+        return jsonify({"databases": dbs, "cwd": os.getcwd()})
+    except Exception as e:
+        logger.exception("debug_db_path failed")
+        return jsonify({"error": str(e)}), 500
 
 
 @misc_bp.route("/learn-from-user-labels", methods=["POST"])
