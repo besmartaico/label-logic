@@ -33,6 +33,46 @@ GOOGLE_OAUTH_REDIRECT_URI = os.environ.get(
 )
 
 
+def _load_google_client_config() -> dict:
+    """
+    Loads OAuth client config from env var GOOGLE_CREDENTIALS_JSON.
+
+    Expected content: the downloaded OAuth client JSON from Google Cloud Console.
+    Can be either {"web": {...}} or {"installed": {...}}. (Web is recommended for hosted apps.)
+    """
+    raw = os.environ.get("GOOGLE_CREDENTIALS_JSON", "").strip()
+    if not raw:
+        raise RuntimeError(
+            "Missing GOOGLE_CREDENTIALS_JSON env var. "
+            "Set it in Railway Variables to your OAuth client JSON."
+        )
+
+    try:
+        return json.loads(raw)
+    except Exception as e:
+        raise RuntimeError(
+            f"GOOGLE_CREDENTIALS_JSON is not valid JSON: {e}"
+        ) from e
+
+
+def _build_flow(state: str | None = None) -> Flow:
+    """
+    Builds a Google OAuth Flow using env-based client config and the configured redirect URI.
+    """
+    client_config = _load_google_client_config()
+
+    # Flow.from_client_config expects the full JSON dict (e.g., {"web": {...}}).
+    kwargs = dict(
+        client_config=client_config,
+        scopes=ALL_SCOPES,
+        redirect_uri=GOOGLE_OAUTH_REDIRECT_URI,
+    )
+    if state:
+        kwargs["state"] = state
+
+    return Flow.from_client_config(**kwargs)
+
+
 @misc_bp.route("/")
 def index():
     if "google_user_id" not in session:
@@ -58,11 +98,12 @@ def ai_status():
 
 @misc_bp.route("/auth/google")
 def auth_google():
-    flow = Flow.from_client_secrets_file(
-        os.path.join(os.path.dirname(__file__), "credentials.json"),
-        scopes=ALL_SCOPES,
-        redirect_uri=GOOGLE_OAUTH_REDIRECT_URI,
-    )
+    try:
+        flow = _build_flow()
+    except Exception as e:
+        logger.exception("Failed to build OAuth flow in /auth/google")
+        return jsonify({"error": str(e)}), 500
+
     auth_url, state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
@@ -78,12 +119,11 @@ def oauth2callback():
     if not state:
         return jsonify({"error": "Missing OAuth state"}), 400
 
-    flow = Flow.from_client_secrets_file(
-        os.path.join(os.path.dirname(__file__), "credentials.json"),
-        scopes=ALL_SCOPES,
-        state=state,
-        redirect_uri=GOOGLE_OAUTH_REDIRECT_URI,
-    )
+    try:
+        flow = _build_flow(state=state)
+    except Exception as e:
+        logger.exception("Failed to build OAuth flow in /oauth2callback")
+        return jsonify({"error": str(e)}), 500
 
     flow.fetch_token(authorization_response=request.url)
     creds = flow.credentials
