@@ -154,7 +154,13 @@ def oauth2callback():
     if not google_user_id or not email:
         return jsonify({"error": "Missing user info from ID token"}), 400
 
+    try:
     save_credentials(google_user_id, email, creds)
+    logger.info("Saved credentials for %s (%s)", email, google_user_id)
+except Exception as e:
+    logger.exception("save_credentials failed for %s (%s)", email, google_user_id)
+    return jsonify({"error": f"save_credentials failed: {e}"}), 500
+
 
     session["google_user_id"] = google_user_id
     session["email"] = email
