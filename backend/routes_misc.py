@@ -195,27 +195,37 @@ def debug_session():
 def debug_creds():
     """
     Confirms whether we can find stored credentials for the current session user in the DB.
+    NOTE: Credentials are stored in google_accounts (see db.save_credentials / db.load_credentials).
     """
     uid = session.get("google_user_id")
     if not uid:
         return jsonify({"error": "no session google_user_id"}), 401
 
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT email FROM credentials WHERE google_user_id = ?",
-        (uid,),
-    )
-    row = cur.fetchone()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT email, credentials_json
+            FROM google_accounts
+            WHERE google_user_id = ?;
+            """,
+            (uid,),
+        )
+        row = cur.fetchone()
+        conn.close()
 
-    return jsonify(
-        {
-            "google_user_id": uid,
-            "found_in_db": bool(row),
-            "db_email": row["email"] if row else None,
-        }
-    )
+        return jsonify(
+            {
+                "google_user_id": uid,
+                "found_in_db": bool(row),
+                "db_email": row["email"] if row else None,
+                "has_credentials_json": bool(row["credentials_json"]) if row else False,
+            }
+        )
+    except Exception as e:
+        logger.exception("debug_creds failed")
+        return jsonify({"error": str(e)}), 500
 
 
 @misc_bp.route("/api/labeled-emails-count", methods=["GET"])
