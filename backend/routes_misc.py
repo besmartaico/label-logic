@@ -5,8 +5,6 @@ from datetime import datetime
 
 from flask import Blueprint, jsonify, redirect, request, url_for, session
 
-from dotenv import load_dotenv
-
 from google_auth_oauthlib.flow import Flow
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
@@ -28,44 +26,55 @@ GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 OIDC_SCOPES = ["openid", "https://www.googleapis.com/auth/userinfo.email"]
 ALL_SCOPES = GMAIL_SCOPES + OIDC_SCOPES
 
-GOOGLE_OAUTH_REDIRECT_URI = os.environ.get(
-    "GOOGLE_OAUTH_REDIRECT_URI", "http://localhost:5000/oauth2callback"
-)
-
 
 def _load_google_client_config() -> dict:
     """
     Loads OAuth client config from env var GOOGLE_CREDENTIALS_JSON.
 
     Expected content: the downloaded OAuth client JSON from Google Cloud Console.
-    Can be either {"web": {...}} or {"installed": {...}}. (Web is recommended for hosted apps.)
+    Can be either {"web": {...}} or {"installed": {...}}. ("web" is recommended for hosted apps.)
     """
     raw = os.environ.get("GOOGLE_CREDENTIALS_JSON", "").strip()
     if not raw:
         raise RuntimeError(
             "Missing GOOGLE_CREDENTIALS_JSON env var. "
-            "Set it in Railway Variables to your OAuth client JSON."
+            "Set it in your hosting provider environment variables to your OAuth client JSON."
         )
 
     try:
         return json.loads(raw)
     except Exception as e:
-        raise RuntimeError(
-            f"GOOGLE_CREDENTIALS_JSON is not valid JSON: {e}"
-        ) from e
+        raise RuntimeError(f"GOOGLE_CREDENTIALS_JSON is not valid JSON: {e}") from e
+
+
+def _get_redirect_uri() -> str:
+    """
+    Returns the OAuth redirect URI.
+
+    Priority:
+    1) If GOOGLE_OAUTH_REDIRECT_URI is set, use it (explicit override).
+    2) Otherwise build from the current request host (works locally + Render).
+    """
+    forced = os.environ.get("GOOGLE_OAUTH_REDIRECT_URI", "").strip()
+    if forced:
+        return forced
+
+    # Build from the request host so we never accidentally redirect to localhost in production.
+    # Example on Render: https://your-app.onrender.com/oauth2callback
+    return request.url_root.rstrip("/") + url_for("misc.oauth2callback")
 
 
 def _build_flow(state: str | None = None) -> Flow:
     """
-    Builds a Google OAuth Flow using env-based client config and the configured redirect URI.
+    Builds a Google OAuth Flow using env-based client config and a redirect URI
+    that matches the current host.
     """
     client_config = _load_google_client_config()
 
-    # Flow.from_client_config expects the full JSON dict (e.g., {"web": {...}}).
     kwargs = dict(
         client_config=client_config,
         scopes=ALL_SCOPES,
-        redirect_uri=GOOGLE_OAUTH_REDIRECT_URI,
+        redirect_uri=_get_redirect_uri(),
     )
     if state:
         kwargs["state"] = state
@@ -125,6 +134,7 @@ def oauth2callback():
         logger.exception("Failed to build OAuth flow in /oauth2callback")
         return jsonify({"error": str(e)}), 500
 
+    # After ProxyFix, request.url should reflect the correct scheme/host.
     flow.fetch_token(authorization_response=request.url)
     creds = flow.credentials
 
