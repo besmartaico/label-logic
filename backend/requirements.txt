@@ -26,3 +26,5 @@ requests
 gunicorn
 
 mysql-connector-python
+
+psycopg2-binary

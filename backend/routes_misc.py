@@ -154,13 +154,13 @@ def oauth2callback():
     if not google_user_id or not email:
         return jsonify({"error": "Missing user info from ID token"}), 400
 
+    # ✅ FIX: Properly indented try/except and return a clear error if save fails
     try:
-    save_credentials(google_user_id, email, creds)
-    logger.info("Saved credentials for %s (%s)", email, google_user_id)
-except Exception as e:
-    logger.exception("save_credentials failed for %s (%s)", email, google_user_id)
-    return jsonify({"error": f"save_credentials failed: {e}"}), 500
-
+        save_credentials(google_user_id, email, creds)
+        logger.info("Saved credentials for %s (%s)", email, google_user_id)
+    except Exception as e:
+        logger.exception("save_credentials failed for %s (%s)", email, google_user_id)
+        return jsonify({"error": f"save_credentials failed: {e}"}), 500
 
     session["google_user_id"] = google_user_id
     session["email"] = email
@@ -214,7 +214,7 @@ def debug_creds():
             """
             SELECT email, credentials_json
             FROM google_accounts
-            WHERE google_user_id = ?;
+            WHERE google_user_id = %s;
             """,
             (uid,),
         )
@@ -234,37 +234,47 @@ def debug_creds():
         return jsonify({"error": str(e)}), 500
 
 
+@misc_bp.route("/debug/db-path", methods=["GET"])
+def debug_db_path():
+    """
+    Postgres-friendly DB debug endpoint (replaces sqlite PRAGMA usage).
+    """
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+              current_database() AS db,
+              inet_server_addr() AS server_addr,
+              inet_server_port() AS server_port;
+            """
+        )
+        info = cur.fetchone()
+        conn.close()
+
+        return jsonify(
+            {
+                "cwd": os.getcwd(),
+                "database": info,
+                "has_database_url": bool(os.environ.get("DATABASE_URL")),
+                "pgsslmode": os.environ.get("PGSSLMODE", "require"),
+            }
+        )
+    except Exception as e:
+        logger.exception("debug_db_path failed")
+        return jsonify({"error": str(e)}), 500
+
+
 @misc_bp.route("/api/labeled-emails-count", methods=["GET"])
 def labeled_emails_count():
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM labeled_emails;")
+    cur.execute("SELECT COUNT(*) AS count FROM labeled_emails;")
     row = cur.fetchone()
     conn.close()
-    count = row[0] if row else 0
+    count = row["count"] if row else 0
     return jsonify({"count": count, "status": "Fetched labeled emails"})
-    
-@misc_bp.route("/debug/db-path", methods=["GET"])
-def debug_db_path():
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("PRAGMA database_list;")
-        rows = cur.fetchall()
-        conn.close()
-
-        # rows usually look like: [(seq, name, file), ...]
-        # sqlite3 Row may be dict-like depending on your connection settings
-        dbs = []
-        for r in rows:
-            try:
-                dbs.append({"seq": r[0], "name": r[1], "file": r[2]})
-            except Exception:
-                dbs.append(dict(r))
-        return jsonify({"databases": dbs, "cwd": os.getcwd()})
-    except Exception as e:
-        logger.exception("debug_db_path failed")
-        return jsonify({"error": str(e)}), 500
 
 
 @misc_bp.route("/learn-from-user-labels", methods=["POST"])
@@ -376,9 +386,9 @@ def learn_from_user_labels():
         cur.execute(
             """
             SELECT 1 FROM rules
-            WHERE label_name = ?
-              AND from_contains = ?
-              AND is_active = 1
+            WHERE label_name = %s
+              AND from_contains = %s
+              AND is_active = TRUE
             LIMIT 1;
             """,
             (label, f"@{domain}"),
@@ -393,7 +403,7 @@ def learn_from_user_labels():
             INSERT INTO rules
             (label_name, from_contains, subject_contains, body_contains,
              is_active, mark_as_read, created_at, updated_at)
-            VALUES (?, ?, '', '', 1, 0, ?, ?);
+            VALUES (%s, %s, '', '', TRUE, FALSE, %s, %s);
             """,
             (label, f"@{domain}", now, now),
         )

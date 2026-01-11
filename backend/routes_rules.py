@@ -3,7 +3,6 @@ import logging
 from datetime import datetime
 
 from flask import Blueprint, render_template, jsonify, request
-
 from googleapiclient.errors import HttpError
 
 from db import get_db_connection, record_labeled_email, record_ai_suggestion
@@ -49,11 +48,11 @@ def db_row_to_rule(row):
     return {
         "id": row["id"],
         "label_name": row["label_name"],
-        "from_contains": row["from_contains"] or "",
-        "subject_contains": row["subject_contains"] or "",
-        "body_contains": row["body_contains"] or "",
-        "is_active": bool(row["is_active"]),
-        "mark_as_read": bool(row["mark_as_read"]),
+        "from_contains": row.get("from_contains") or "",
+        "subject_contains": row.get("subject_contains") or "",
+        "body_contains": row.get("body_contains") or "",
+        "is_active": bool(row.get("is_active")),
+        "mark_as_read": bool(row.get("mark_as_read")),
     }
 
 
@@ -63,7 +62,7 @@ def load_active_rules():
     cur.execute(
         """
         SELECT * FROM rules
-        WHERE is_active = 1
+        WHERE is_active = TRUE
         ORDER BY id;
         """
     )
@@ -134,8 +133,8 @@ def api_create_rule():
     from_contains = (data.get("from_contains") or "").strip()
     subject_contains = (data.get("subject_contains") or "").strip()
     body_contains = (data.get("body_contains") or "").strip()
-    is_active = 1 if data.get("is_active", True) else 0
-    mark_as_read = 1 if data.get("mark_as_read", False) else 0
+    is_active = bool(data.get("is_active", True))
+    mark_as_read = bool(data.get("mark_as_read", False))
 
     is_valid, error_msg = validate_rule_label_name(label_name)
     if not is_valid:
@@ -148,9 +147,11 @@ def api_create_rule():
     cur.execute(
         """
         INSERT INTO rules
-        (label_name, from_contains, subject_contains, body_contains,
-         is_active, mark_as_read, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+          (label_name, from_contains, subject_contains, body_contains,
+           is_active, mark_as_read, created_at, updated_at)
+        VALUES
+          (%s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING id;
         """,
         (
             label_name,
@@ -163,7 +164,8 @@ def api_create_rule():
             now,
         ),
     )
-    new_id = cur.lastrowid
+    new_row = cur.fetchone()
+    new_id = new_row["id"]
     conn.commit()
     conn.close()
 
@@ -196,7 +198,7 @@ def api_update_rule(rule_id):
     conn = get_db_connection()
     cur = conn.cursor()
 
-    cur.execute("SELECT * FROM rules WHERE id = ?;", (rule_id,))
+    cur.execute("SELECT * FROM rules WHERE id = %s;", (rule_id,))
     row = cur.fetchone()
     if not row:
         conn.close()
@@ -204,20 +206,20 @@ def api_update_rule(rule_id):
 
     new_label_name = (label_name or row["label_name"]).strip()
     new_from = (
-        (from_contains if from_contains is not None else row["from_contains"] or "")
+        (from_contains if from_contains is not None else row.get("from_contains") or "")
         .strip()
     )
     new_subject = (
-        (subject_contains if subject_contains is not None else row["subject_contains"] or "")
+        (subject_contains if subject_contains is not None else row.get("subject_contains") or "")
         .strip()
     )
     new_body = (
-        (body_contains if body_contains is not None else row["body_contains"] or "")
+        (body_contains if body_contains is not None else row.get("body_contains") or "")
         .strip()
     )
-    new_is_active = 1 if (is_active if is_active is not None else row["is_active"]) else 0
-    new_mark_as_read = (
-        1 if (mark_as_read if mark_as_read is not None else row["mark_as_read"]) else 0
+    new_is_active = bool(is_active if is_active is not None else row.get("is_active"))
+    new_mark_as_read = bool(
+        mark_as_read if mark_as_read is not None else row.get("mark_as_read")
     )
 
     is_valid, error_msg = validate_rule_label_name(new_label_name)
@@ -230,14 +232,14 @@ def api_update_rule(rule_id):
     cur.execute(
         """
         UPDATE rules
-        SET label_name = ?,
-            from_contains = ?,
-            subject_contains = ?,
-            body_contains = ?,
-            is_active = ?,
-            mark_as_read = ?,
-            updated_at = ?
-        WHERE id = ?;
+        SET label_name = %s,
+            from_contains = %s,
+            subject_contains = %s,
+            body_contains = %s,
+            is_active = %s,
+            mark_as_read = %s,
+            updated_at = %s
+        WHERE id = %s;
         """,
         (
             new_label_name,
@@ -270,7 +272,7 @@ def api_update_rule(rule_id):
 def api_delete_rule(rule_id):
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("DELETE FROM rules WHERE id = ?;", (rule_id,))
+    cur.execute("DELETE FROM rules WHERE id = %s;", (rule_id,))
     conn.commit()
     conn.close()
     return jsonify({"status": "deleted"})
@@ -323,12 +325,7 @@ def api_get_labels():
     enriched = []
     for lbl in labels:
         try:
-            detail = (
-                service.users()
-                .labels()
-                .get(userId="me", id=lbl["id"])
-                .execute()
-            )
+            detail = service.users().labels().get(userId="me", id=lbl["id"]).execute()
         except HttpError:
             logger.exception("Error fetching label detail for %s", lbl.get("name"))
             continue
@@ -390,11 +387,7 @@ def api_mark_label_read(label_id):
 
     if not all_ids:
         return jsonify(
-            {
-                "status": "ok",
-                "updated": 0,
-                "message": "No unread messages in this label.",
-            }
+            {"status": "ok", "updated": 0, "message": "No unread messages in this label."}
         )
 
     CHUNK_SIZE = 1000
@@ -410,11 +403,7 @@ def api_mark_label_read(label_id):
         return jsonify({"error": "Gmail batchModify failed"}), 500
 
     return jsonify(
-        {
-            "status": "ok",
-            "updated": len(all_ids),
-            "message": f"Marked {len(all_ids)} messages as read.",
-        }
+        {"status": "ok", "updated": len(all_ids), "message": f"Marked {len(all_ids)} messages as read."}
     )
 
 
@@ -437,11 +426,7 @@ def run_labeler():
         msg_list = (
             service.users()
             .messages()
-            .list(
-                userId="me",
-                labelIds=["INBOX"],
-                maxResults=MAX_EMAILS_PER_RUN,
-            )
+            .list(userId="me", labelIds=["INBOX"], maxResults=MAX_EMAILS_PER_RUN)
             .execute()
         )
         messages = msg_list.get("messages", [])
@@ -525,12 +510,7 @@ def run_labeler():
     )
 
     return jsonify(
-        {
-            "status": "ok",
-            "processed": total,
-            "rule_labeled": rule_count,
-            "ai_labeled": ai_count,
-        }
+        {"status": "ok", "processed": total, "rule_labeled": rule_count, "ai_labeled": ai_count}
     )
 
 
@@ -551,10 +531,4 @@ def init_default_labels():
         if label_id:
             ensured.append({"name": name, "id": label_id})
 
-    return jsonify(
-        {
-            "status": "ok",
-            "count": len(ensured),
-            "ensured_labels": ensured,
-        }
-    )
+    return jsonify({"status": "ok", "count": len(ensured), "ensured_labels": ensured})
