@@ -71,6 +71,30 @@ def load_active_rules():
     return [db_row_to_rule(r) for r in rows]
 
 
+# -----------------------------
+# Debug
+# -----------------------------
+
+
+@rules_bp.route("/debug/rules-count", methods=["GET"])
+def debug_rules_count():
+    """
+    Quick sanity check: how many rules are in the DB?
+    If this returns 0 active rules, then 'Rules applied: 0' is expected.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT COUNT(*) AS cnt FROM rules;")
+    total = cur.fetchone()["cnt"]
+
+    cur.execute("SELECT COUNT(*) AS cnt FROM rules WHERE is_active = TRUE;")
+    active = cur.fetchone()["cnt"]
+
+    conn.close()
+    return jsonify({"total_rules": total, "active_rules": active})
+
+
 def validate_rule_label_name(label_name: str):
     from gmail_client import is_probably_valid_label_name
 
@@ -210,8 +234,11 @@ def api_update_rule(rule_id):
         .strip()
     )
     new_subject = (
-        (subject_contains if subject_contains is not None else row.get("subject_contains") or "")
-        .strip()
+        (
+            subject_contains
+            if subject_contains is not None
+            else row.get("subject_contains") or ""
+        ).strip()
     )
     new_body = (
         (body_contains if body_contains is not None else row.get("body_contains") or "")
@@ -403,7 +430,11 @@ def api_mark_label_read(label_id):
         return jsonify({"error": "Gmail batchModify failed"}), 500
 
     return jsonify(
-        {"status": "ok", "updated": len(all_ids), "message": f"Marked {len(all_ids)} messages as read."}
+        {
+            "status": "ok",
+            "updated": len(all_ids),
+            "message": f"Marked {len(all_ids)} messages as read.",
+        }
     )
 
 
@@ -510,7 +541,12 @@ def run_labeler():
     )
 
     return jsonify(
-        {"status": "ok", "processed": total, "rule_labeled": rule_count, "ai_labeled": ai_count}
+        {
+            "status": "ok",
+            "processed": total,
+            "rule_labeled": rule_count,
+            "ai_labeled": ai_count,
+        }
     )
 
 
