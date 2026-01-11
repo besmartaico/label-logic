@@ -13,6 +13,7 @@ from gmail_client import (
     extract_email_fields,
 )
 from ai_labels import DEFAULT_LL_LABELS, get_allowed_ai_labels, ai_suggest_label
+from rule_learner import learn_rules_from_labeled_emails
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,79 @@ def debug_rules_count():
 
     conn.close()
     return jsonify({"total_rules": total, "active_rules": active})
+
+
+@rules_bp.route("/learn-rules", methods=["POST"])
+def learn_rules():
+    """
+    Learn rules by looking at existing emails already inside Gmail labels, then auto-create
+    rules in the rules table.
+
+    This is the "learning loop" that lets the system improve from how your mailbox is already organized.
+    """
+    from flask import session, redirect, url_for
+
+    if "google_user_id" not in session:
+        return redirect(url_for("misc.auth_google"))
+
+    try:
+        service = get_gmail_service_for_current_user()
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 401
+    except Exception as e:
+        logger.exception("Gmail auth failed in learn_rules")
+        return jsonify({"error": f"Gmail auth failed: {e}"}), 500
+
+    # Learning parameters (env-configurable)
+    try:
+        max_per_label = int(os.environ.get("RULE_LEARN_MAX_PER_LABEL", "200"))
+    except ValueError:
+        max_per_label = 200
+
+    try:
+        min_domain_count = int(os.environ.get("RULE_LEARN_MIN_DOMAIN_COUNT", "3"))
+    except ValueError:
+        min_domain_count = 3
+
+    try:
+        min_token_count = int(os.environ.get("RULE_LEARN_MIN_TOKEN_COUNT", "4"))
+    except ValueError:
+        min_token_count = 4
+
+    try:
+        purity = float(os.environ.get("RULE_LEARN_PURITY", "0.9"))
+    except ValueError:
+        purity = 0.9
+
+    try:
+        max_rules_per_label = int(os.environ.get("RULE_LEARN_MAX_RULES_PER_LABEL", "10"))
+    except ValueError:
+        max_rules_per_label = 10
+
+    allowed_labels = get_allowed_ai_labels()
+
+    # Optionally, allow caller to specify labels (subset) in POST body:
+    data = request.get_json(silent=True) or {}
+    requested_labels = data.get("labels")
+    if isinstance(requested_labels, list) and requested_labels:
+        label_names = [x for x in requested_labels if isinstance(x, str) and x.strip()]
+        # Keep only allowed labels (safety)
+        label_names = [ln for ln in label_names if ln in allowed_labels]
+    else:
+        label_names = allowed_labels
+
+    result = learn_rules_from_labeled_emails(
+        service,
+        label_names,
+        max_per_label=max_per_label,
+        min_domain_count=min_domain_count,
+        min_token_count=min_token_count,
+        purity=purity,
+        max_rules_per_label=max_rules_per_label,
+        create_domain_rules=True,
+        create_subject_rules=True,
+    )
+    return jsonify(result)
 
 
 def validate_rule_label_name(label_name: str):

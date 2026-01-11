@@ -9,294 +9,181 @@ function renderRuleRow(rule) {
     <td>${rule.is_active ? "Yes" : "No"}</td>
     <td>${rule.mark_as_read ? "Yes" : "No"}</td>
     <td>
-      <button class="btn btn-sm btn-outline-secondary me-1 edit-btn">Edit</button>
+      <button class="btn btn-sm btn-outline-primary me-1 edit-btn">Edit</button>
       <button class="btn btn-sm btn-outline-danger delete-btn">Delete</button>
     </td>
   `;
 
   tr.querySelector(".edit-btn").addEventListener("click", () => {
-    document.getElementById("rule-id").value = rule.id;
-    document.getElementById("label-name").value = rule.label_name;
+    document.getElementById("label-name").value = rule.label_name || "";
     document.getElementById("from-contains").value = rule.from_contains || "";
     document.getElementById("subject-contains").value = rule.subject_contains || "";
     document.getElementById("body-contains").value = rule.body_contains || "";
     document.getElementById("is-active").checked = !!rule.is_active;
     document.getElementById("mark-as-read").checked = !!rule.mark_as_read;
-    document.getElementById("rule-status").textContent = `Editing rule #${rule.id}`;
+
+    document.getElementById("rule-form").dataset.editingId = rule.id;
+    document.getElementById("rule-status").textContent = `Editing rule ${rule.id}`;
   });
 
   tr.querySelector(".delete-btn").addEventListener("click", async () => {
-    if (!confirm(`Delete rule #${rule.id}?`)) return;
-    try {
-      const res = await fetch(`/api/rules/${rule.id}`, { method: "DELETE" });
-      if (!res.ok) {
-        alert("Error deleting rule.");
-        return;
-      }
-      document.getElementById("rule-status").textContent = `Deleted rule #${rule.id}`;
-      fetchRules();
-    } catch (err) {
-      console.error(err);
-      alert("Error deleting rule.");
+    if (!confirm(`Delete rule ${rule.id}?`)) return;
+
+    const res = await fetch(`/api/rules/${rule.id}`, { method: "DELETE" });
+    if (!res.ok) {
+      alert(`Delete failed: ${res.status}`);
+      return;
     }
+    await loadRules();
   });
 
   return tr;
 }
 
-async function fetchRules() {
+async function loadRules() {
   const tbody = document.querySelector("#rules-table tbody");
   tbody.innerHTML = `
-    <tr>
-      <td colspan="8" class="text-center text-muted small">Loading rules…</td>
-    </tr>
+    <tr><td colspan="8" class="text-center text-muted py-4">Loading…</td></tr>
   `;
 
-  try {
-    const res = await fetch("/api/rules");
-    if (!res.ok) {
-      tbody.innerHTML = `
-        <tr>
-          <td colspan="8" class="text-center text-danger small">
-            Error loading rules: ${res.status}
-          </td>
-        </tr>
-      `;
-      return;
-    }
-
-    const rules = await res.json();
-    if (!rules.length) {
-      tbody.innerHTML = `
-        <tr>
-          <td colspan="8" class="text-center text-muted small">
-            No rules yet. Create one above.
-          </td>
-        </tr>
-      `;
-      return;
-    }
-
-    tbody.innerHTML = "";
-    rules.forEach(rule => {
-      tbody.appendChild(renderRuleRow(rule));
-    });
-
-  } catch (err) {
-    document.getElementById("rule-status").textContent = "Error loading rules.";
-    console.error(err);
-  }
-}
-
-async function loadGmailLabelOptions() {
-  const sel = document.getElementById("label-select");
-  if (!sel) return;
-
-  try {
-    const res = await fetch("/api/gmail-labels");
-    if (!res.ok) {
-      console.error("Error fetching Gmail labels for dropdown:", res.status);
-      return;
-    }
-
-    const labels = await res.json();
-    while (sel.options.length > 2) {
-      sel.remove(2);
-    }
-
-    labels.forEach(label => {
-      if (!label.name) return;
-      const opt = document.createElement("option");
-      opt.value = label.name;
-      opt.textContent = label.name;
-      sel.appendChild(opt);
-    });
-  } catch (err) {
-    console.error("Error loading Gmail label options:", err);
-  }
-}
-
-async function fetchLabels() {
-  const tbody = document.querySelector("#labels-table tbody");
-  const status = document.getElementById("labels-status");
-  tbody.innerHTML = `
-    <tr>
-      <td colspan="4" class="text-center text-muted small">Loading labels…</td>
-    </tr>
-  `;
-  status.textContent = "";
-
-  try {
-    const res = await fetch("/api/labels");
-    if (!res.ok) {
-      tbody.innerHTML = `
-        <tr>
-          <td colspan="4" class="text-center text-danger small">
-            Error loading labels: ${res.status}
-          </td>
-        </tr>
-      `;
-      return;
-    }
-
-    const labels = await res.json();
-    if (!labels.length) {
-      tbody.innerHTML = `
-        <tr>
-          <td colspan="4" class="text-center text-muted small">
-            No labels found.
-          </td>
-        </tr>
-      `;
-      return;
-    }
-
-    tbody.innerHTML = "";
-    labels.forEach(label => {
-      const tr = document.createElement("tr");
-      const displayName = label.name === "UNREAD" ? "Unread" : label.name;
-
-      tr.innerHTML = `
-        <td>${displayName}</td>
-        <td class="text-end">${label.messagesUnread}</td>
-        <td class="text-end">${label.messagesTotal}</td>
-        <td class="text-end">
-          <button class="btn btn-sm btn-outline-primary mark-read-btn">
-            Mark all as read
-          </button>
-        </td>
-      `;
-
-      tr.querySelector(".mark-read-btn").addEventListener("click", async () => {
-        if (!confirm(`Mark all unread emails in "${displayName}" as read?`)) return;
-
-        status.textContent = `Marking unread emails in "${displayName}" as read…`;
-
-        try {
-          const res2 = await fetch(`/api/labels/${label.id}/mark-read`, {
-            method: "POST",
-          });
-          if (!res2.ok) {
-            status.textContent = `Error marking label as read: ${res2.status}`;
-            return;
-          }
-          const data2 = await res2.json();
-          status.textContent = data2.message || "Done.";
-          fetchLabels();
-        } catch (err) {
-          status.textContent = "Error marking label as read.";
-          console.error(err);
-        }
-      });
-
-      tbody.appendChild(tr);
-    });
-
-  } catch (err) {
+  const res = await fetch("/api/rules");
+  if (!res.ok) {
     tbody.innerHTML = `
-      <tr>
-        <td colspan="4" class="text-center text-danger small">
-          Error loading labels.
-        </td>
-      </tr>
+      <tr><td colspan="8" class="text-center text-danger py-4">Error loading rules</td></tr>
     `;
-    console.error(err);
+    return;
+  }
+
+  const rules = await res.json();
+  tbody.innerHTML = "";
+
+  if (!rules.length) {
+    tbody.innerHTML = `
+      <tr><td colspan="8" class="text-center text-muted py-4">No rules yet. Create one above.</td></tr>
+    `;
+    return;
+  }
+
+  for (const r of rules) {
+    tbody.appendChild(renderRuleRow(r));
   }
 }
 
-async function initDefaultLabels() {
-  const status = document.getElementById("init-labels-status");
-  status.textContent = "Creating default LL labels in Gmail…";
+async function loadLabels() {
+  const tbody = document.querySelector("#labels-table tbody");
+  tbody.innerHTML = `
+    <tr><td colspan="4" class="text-center text-muted py-4">Loading…</td></tr>
+  `;
 
-  try {
-    const res = await fetch("/init-default-labels", { method: "POST" });
-    if (!res.ok) {
-      status.textContent = `Error initializing labels: ${res.status}`;
-      return;
-    }
-    const data = await res.json();
-    status.textContent =
-      `Ensured ${data.count || 0} labels exist: ` +
-      (data.ensured_labels || []).map(l => l.name).join(", ");
-    loadGmailLabelOptions();
-    fetchLabels();
-  } catch (err) {
-    console.error(err);
-    status.textContent = "Error initializing labels.";
+  const res = await fetch("/api/labels");
+  if (!res.ok) {
+    tbody.innerHTML = `
+      <tr><td colspan="4" class="text-center text-danger py-4">Error loading labels</td></tr>
+    `;
+    return;
   }
-}
 
-async function learnFromUserLabels() {
-  try {
-    const res = await fetch("/learn-from-user-labels", { method: "POST" });
-    if (!res.ok) {
-      console.error("Error learning from user labels:", res.status);
-      return;
-    }
-    const data = await res.json();
-    console.log(
-      `Learned from ${data.user_labeled_added} emails. Created ${data.rules_created} new rules.`
-    );
-    fetchRules();
-  } catch (err) {
-    console.error("Error learning from user labels.", err);
+  const labels = await res.json();
+  tbody.innerHTML = "";
+
+  if (!labels.length) {
+    tbody.innerHTML = `
+      <tr><td colspan="4" class="text-center text-muted py-4">No labels found.</td></tr>
+    `;
+    return;
   }
-}
 
-document.addEventListener("DOMContentLoaded", () => {
-  // Rule form handlers
-  document.getElementById("rule-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
+  for (const lbl of labels) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${lbl.name}</td>
+      <td class="text-end">${lbl.messagesUnread ?? 0}</td>
+      <td class="text-end">${lbl.messagesTotal ?? 0}</td>
+      <td class="text-end">
+        <button class="btn btn-sm btn-outline-secondary mark-read-btn">Mark Read</button>
+      </td>
+    `;
 
-    const payload = {
-      label_name: document.getElementById("label-name").value,
-      from_contains: document.getElementById("from-contains").value,
-      subject_contains: document.getElementById("subject-contains").value,
-      body_contains: document.getElementById("body-contains").value,
-      is_active: document.getElementById("is-active").checked,
-      mark_as_read: document.getElementById("mark-as-read").checked,
-    };
+    tr.querySelector(".mark-read-btn").addEventListener("click", async () => {
+      const ok = confirm(`Mark all unread in "${lbl.name}" as read?`);
+      if (!ok) return;
 
-    const ruleId = document.getElementById("rule-id").value;
-    const url = ruleId ? `/api/rules/${ruleId}` : "/api/rules";
-    const method = ruleId ? "PUT" : "POST";
+      tr.querySelector(".mark-read-btn").disabled = true;
+      tr.querySelector(".mark-read-btn").textContent = "Working…";
 
-    try {
-      const res = await fetch(url, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      const resp = await fetch(`/api/labels/${lbl.id}/mark-read`, { method: "POST" });
+      const data = await resp.json();
 
-      if (!res.ok) {
-        document.getElementById("rule-status").textContent =
-          `Error saving rule (status ${res.status}).`;
-        return;
+      if (!resp.ok) {
+        alert(data?.error || `Error: ${resp.status}`);
+      } else {
+        alert(data?.message || "Done");
+        await loadLabels();
       }
 
-      const saved = await res.json();
-      document.getElementById("rule-status").textContent =
-        `Rule #${saved.id} saved.`;
-      document.getElementById("rule-form").reset();
-      document.getElementById("rule-id").value = "";
-      document.getElementById("is-active").checked = true;
-      document.getElementById("mark-as-read").checked = false;
+      tr.querySelector(".mark-read-btn").disabled = false;
+      tr.querySelector(".mark-read-btn").textContent = "Mark Read";
+    });
 
-      fetchRules();
-    } catch (err) {
-      console.error(err);
-      document.getElementById("rule-status").textContent =
-        "Unexpected error saving rule.";
+    tbody.appendChild(tr);
+  }
+}
+
+document.addEventListener("DOMContentLoaded", async () => {
+  await loadRules();
+
+  // Refresh labels
+  document.getElementById("refresh-labels-btn").addEventListener("click", async () => {
+    await loadLabels();
+  });
+
+  // Initialize default LL labels
+  document.getElementById("init-labels-btn").addEventListener("click", async () => {
+    const status = document.getElementById("init-labels-status");
+    status.textContent = "Initializing default LL labels…";
+
+    try {
+      const res = await fetch("/init-default-labels", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        status.textContent = data?.error || `Error: ${res.status}`;
+        return;
+      }
+      status.textContent = `Ensured ${data.count} labels.`;
+      await loadLabels();
+    } catch (e) {
+      status.textContent = `Error: ${e}`;
     }
   });
 
-  document.getElementById("clear-btn").addEventListener("click", () => {
-    document.getElementById("rule-form").reset();
-    document.getElementById("rule-id").value = "";
-    document.getElementById("is-active").checked = true;
-    document.getElementById("mark-as-read").checked = false;
-    document.getElementById("rule-status").textContent = "Form cleared.";
-  });
+  // Learn rules from labeled emails
+  const learnBtn = document.getElementById("learn-rules-btn");
+  if (learnBtn) {
+    learnBtn.addEventListener("click", async () => {
+      const status = document.getElementById("learn-rules-status");
+      status.textContent = "Learning rules from existing labeled emails… (this can take a bit)";
+
+      try {
+        const res = await fetch("/learn-rules", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({})
+        });
+
+        if (!res.ok) {
+          status.textContent = `Error: ${res.status}`;
+          return;
+        }
+
+        const data = await res.json();
+        const created = data.created ?? 0;
+        status.textContent = `Learned and created ${created} rule(s). Refreshing rules…`;
+        await loadRules();
+      } catch (e) {
+        status.textContent = `Error: ${e}`;
+      }
+    });
+  }
 
   // Run labeler
   document.getElementById("run-labeler-btn").addEventListener("click", async () => {
@@ -310,41 +197,67 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
       const data = await res.json();
-      status.textContent =
-        `Processed ${data.processed} emails. ` +
-        `Rules applied: ${data.rule_labeled}. ` +
-        `AI-labeled: ${data.ai_labeled}.`;
-
-    } catch (err) {
-      status.textContent = "Error running labeler.";
-      console.error(err);
+      status.textContent = `Done. Processed=${data.processed}, Rule=${data.rule_labeled}, AI=${data.ai_labeled}`;
+    } catch (e) {
+      status.textContent = `Error: ${e}`;
     }
   });
 
-  // Init default labels
-  document.getElementById("init-labels-btn").addEventListener("click", initDefaultLabels);
+  // Create/update rule
+  document.getElementById("rule-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const status = document.getElementById("rule-status");
 
-  // Label dropdown change
-  document.getElementById("label-select").addEventListener("change", (e) => {
-    const selVal = e.target.value;
-    const input = document.getElementById("label-name");
-    if (!input) return;
+    const label_name = document.getElementById("label-name").value.trim();
+    const from_contains = document.getElementById("from-contains").value.trim();
+    const subject_contains = document.getElementById("subject-contains").value.trim();
+    const body_contains = document.getElementById("body-contains").value.trim();
+    const is_active = document.getElementById("is-active").checked;
+    const mark_as_read = document.getElementById("mark-as-read").checked;
 
-    if (!selVal || selVal === "__custom__") {
+    const payload = { label_name, from_contains, subject_contains, body_contains, is_active, mark_as_read };
+
+    const editingId = document.getElementById("rule-form").dataset.editingId;
+    const url = editingId ? `/api/rules/${editingId}` : "/api/rules";
+    const method = editingId ? "PUT" : "POST";
+
+    const res = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      status.textContent = data?.error || `Error: ${res.status}`;
       return;
     }
-    input.value = selVal;
+
+    status.textContent = editingId ? `Rule ${editingId} updated.` : "Rule created.";
+    delete document.getElementById("rule-form").dataset.editingId;
+
+    document.getElementById("label-name").value = "";
+    document.getElementById("from-contains").value = "";
+    document.getElementById("subject-contains").value = "";
+    document.getElementById("body-contains").value = "";
+    document.getElementById("is-active").checked = true;
+    document.getElementById("mark-as-read").checked = false;
+
+    await loadRules();
   });
 
-  // Refresh labels table
-  const refreshBtn = document.getElementById("refresh-labels-btn");
-  if (refreshBtn) {
-    refreshBtn.addEventListener("click", fetchLabels);
+  // Clear form
+  const clearBtn = document.getElementById("clear-form-btn");
+  if (clearBtn) {
+    clearBtn.addEventListener("click", () => {
+      delete document.getElementById("rule-form").dataset.editingId;
+      document.getElementById("label-name").value = "";
+      document.getElementById("from-contains").value = "";
+      document.getElementById("subject-contains").value = "";
+      document.getElementById("body-contains").value = "";
+      document.getElementById("is-active").checked = true;
+      document.getElementById("mark-as-read").checked = false;
+      document.getElementById("rule-status").textContent = "Form cleared.";
+    });
   }
-
-  // Initial load
-  learnFromUserLabels();
-  fetchRules();
-  loadGmailLabelOptions();
-  fetchLabels();
 });
