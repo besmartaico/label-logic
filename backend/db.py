@@ -1,6 +1,7 @@
 import os
 import logging
 from datetime import datetime
+from urllib.parse import urlparse
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -19,28 +20,155 @@ class _DictConnection(psycopg2.extensions.connection):
         return super().cursor(*args, **kwargs)
 
 
+# -----------------------------
+# Connection / DSN helpers
+# -----------------------------
+
+
+def _looks_like_bad_internal_host(dsn: str) -> bool:
+    """
+    Railway internal DNS host can be present in some DATABASE_URLs depending on how
+    variables were set/copied. If the app service is NOT attached to the Postgres
+    service, 'postgres.railway.internal' will not resolve and the app will crash.
+    """
+    if not dsn:
+        return False
+    try:
+        parsed = urlparse(dsn)
+        host = (parsed.hostname or "").lower()
+        return host.endswith(".railway.internal") or host == "postgres.railway.internal"
+    except Exception:
+        return False
+
+
+def _first_env(*keys: str) -> str:
+    for k in keys:
+        v = os.environ.get(k)
+        if v and str(v).strip():
+            return str(v).strip()
+    return ""
+
+
+def _build_dsn_from_pg_env() -> str:
+    """
+    Build a postgres DSN from PG* env vars.
+
+    Works well on Railway if you attached the Postgres service, since Railway often
+    injects PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE alongside DATABASE_URL.
+    """
+    host = _first_env("PGHOST", "POSTGRES_HOST", "DB_HOST")
+    port = _first_env("PGPORT", "POSTGRES_PORT", "DB_PORT") or "5432"
+    user = _first_env("PGUSER", "POSTGRES_USER", "DB_USER")
+    password = _first_env("PGPASSWORD", "POSTGRES_PASSWORD", "DB_PASSWORD")
+    dbname = _first_env("PGDATABASE", "POSTGRES_DB", "DB_NAME")
+
+    if not all([host, port, user, password, dbname]):
+        return ""
+
+    # psycopg2 accepts space-separated dsn
+    return f"host={host} port={port} dbname={dbname} user={user} password={password}"
+
+
+def _choose_best_dsn() -> str:
+    """
+    Choose the best DSN in this priority order:
+
+    1) Any explicit PUBLIC db url env var (most reliable across services/networks)
+    2) DATABASE_URL (Railway standard)
+    3) PG* env vars (Railway commonly provides)
+    """
+    # If you create one of these in Railway Variables, it will be used first.
+    dsn_public = _first_env(
+        "DATABASE_URL_PUBLIC",
+        "DATABASE_PUBLIC_URL",
+        "POSTGRES_URL_PUBLIC",
+        "POSTGRES_PUBLIC_URL",
+    )
+    if dsn_public:
+        return dsn_public
+
+    dsn = _first_env("DATABASE_URL", "POSTGRES_URL")
+    if dsn:
+        return dsn
+
+    dsn_from_parts = _build_dsn_from_pg_env()
+    if dsn_from_parts:
+        return dsn_from_parts
+
+    return ""
+
+
 def get_db_connection():
     """
-    Returns a psycopg2 connection to Postgres using DATABASE_URL.
+    Returns a psycopg2 connection to Postgres.
 
-    Required env var:
-      - DATABASE_URL (Railway Postgres provides this)
+    Expected env vars on Railway:
+      - Prefer: DATABASE_URL_PUBLIC (if you set it) / DATABASE_PUBLIC_URL
+      - Else:   DATABASE_URL (Railway Postgres provides this when service is connected)
+      - Else:   PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE (often present on Railway)
 
-    Optional:
-      - PGSSLMODE (default: require). For local dev you can set: PGSSLMODE=disable
+    SSL:
+      - PGSSLMODE default: require
+      - For local dev you can set: PGSSLMODE=disable
     """
-    dsn = os.environ.get("DATABASE_URL", "").strip()
+    dsn = _choose_best_dsn()
     if not dsn:
-        raise RuntimeError("Missing DATABASE_URL env var (Postgres connection string).")
+        raise RuntimeError(
+            "No Postgres connection info found. Set DATABASE_URL (Railway) or "
+            "DATABASE_URL_PUBLIC / PGHOST+PGPORT+PGUSER+PGPASSWORD+PGDATABASE."
+        )
 
     sslmode = os.environ.get("PGSSLMODE", "require")
+    connect_timeout = int(os.environ.get("PGCONNECT_TIMEOUT", "10"))
 
-    conn = psycopg2.connect(
-        dsn,
-        sslmode=sslmode,
-        connection_factory=_DictConnection,
-    )
-    return conn
+    # If DATABASE_URL is pointing at an internal Railway host, it may fail DNS
+    # when the Postgres service isn't attached to this app.
+    # We try to fall back to a public DSN or PG* env vars automatically.
+    if _looks_like_bad_internal_host(dsn):
+        logger.warning(
+            "DATABASE_URL appears to use a Railway internal host (%s). "
+            "Attempting fallback to PUBLIC url or PG* env vars.",
+            dsn,
+        )
+
+        fallback = _first_env(
+            "DATABASE_URL_PUBLIC",
+            "DATABASE_PUBLIC_URL",
+            "POSTGRES_URL_PUBLIC",
+            "POSTGRES_PUBLIC_URL",
+        )
+        if not fallback:
+            fallback = _build_dsn_from_pg_env()
+
+        if fallback:
+            dsn = fallback
+        else:
+            # Provide a very explicit error so you immediately know what to change in Railway.
+            raise RuntimeError(
+                "DATABASE_URL points to 'postgres.railway.internal' but no PUBLIC url or PG* env vars "
+                "are available to fall back to. In Railway, connect your app service to the Postgres "
+                "service (so DATABASE_URL is injected correctly) OR set DATABASE_URL_PUBLIC."
+            )
+
+    try:
+        conn = psycopg2.connect(
+            dsn,
+            sslmode=sslmode,
+            connect_timeout=connect_timeout,
+            connection_factory=_DictConnection,
+        )
+        return conn
+    except psycopg2.OperationalError as e:
+        # Add extra context for the most common Railway failure mode
+        msg = str(e)
+        if "could not translate host name" in msg and "railway.internal" in msg:
+            raise psycopg2.OperationalError(
+                msg
+                + "\n\nLikely cause: DATABASE_URL is set to an internal Railway hostname but your app "
+                  "service is not connected to the Postgres service. Fix: attach the Postgres service "
+                  "to this app in Railway OR set DATABASE_URL_PUBLIC to a public connection string."
+            )
+        raise
 
 
 # -----------------------------
