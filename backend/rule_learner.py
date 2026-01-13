@@ -23,6 +23,13 @@ STOPWORDS = {
 EMAIL_RE = re.compile(r"@([\w\.-]+)")
 TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9\-]{2,}")  # min len ~3
 
+SENDER_EMAIL_RE = re.compile(r"([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})", re.IGNORECASE)
+
+
+# -----------------------------
+# Existing v1 helpers (domain + subject token learning)
+# -----------------------------
+
 
 def _sender_domain(from_field: str) -> str:
     """
@@ -313,5 +320,248 @@ def learn_rules_from_labeled_emails(
             "min_token_count": min_token_count,
             "purity": purity,
             "max_rules_per_label": max_rules_per_label,
+        },
+    }
+
+
+# -----------------------------
+# NEW: Sender-email rules from @LL-* labels (latest wins)
+# -----------------------------
+
+
+def _extract_sender_email(from_field: str) -> str:
+    """
+    Extract sender email from a From header.
+    Example: 'Bob <bob@acme.com>' -> 'bob@acme.com'
+    """
+    _, email = parseaddr(from_field or "")
+    email = (email or "").strip().lower()
+    if email and "@" in email:
+        return email
+
+    m = SENDER_EMAIL_RE.search(from_field or "")
+    if not m:
+        return ""
+    return (m.group(1) or "").strip().lower()
+
+
+def _list_ll_labels(service, prefix: str) -> List[Dict]:
+    """
+    Return Gmail labels whose name starts with prefix (e.g., '@LL-').
+    """
+    resp = service.users().labels().list(userId="me").execute()
+    out = []
+    for lbl in resp.get("labels", []):
+        name = lbl.get("name") or ""
+        if name.startswith(prefix):
+            # only user labels when type is present
+            if lbl.get("type") and lbl.get("type") != "user":
+                continue
+            out.append(lbl)
+    return out
+
+
+def _get_from_and_internal_date(service, gmail_id: str) -> Tuple[str, int]:
+    """
+    Fetch message metadata and return (from, internalDate_ms).
+    """
+    try:
+        msg = (
+            service.users()
+            .messages()
+            .get(
+                userId="me",
+                id=gmail_id,
+                format="metadata",
+                metadataHeaders=["From"],
+            )
+            .execute()
+        )
+    except HttpError:
+        return "", 0
+
+    headers = msg.get("payload", {}).get("headers", []) or []
+    hmap = {h.get("name", "").lower(): h.get("value", "") for h in headers}
+    from_h = hmap.get("from", "") or ""
+
+    try:
+        internal_ms = int(msg.get("internalDate") or 0)
+    except Exception:
+        internal_ms = 0
+
+    return from_h, internal_ms
+
+
+def _upsert_sender_email_rule_latest_wins(sender_email: str, label_name: str) -> int:
+    """
+    "Latest manual placement wins" behavior:
+      - If any rule exists with from_contains == sender_email, update it to label_name (and keep active)
+      - Else insert a new rule with from_contains == sender_email
+
+    Returns 1 if inserted/updated, 0 if skipped.
+    """
+    sender_email = (sender_email or "").strip().lower()
+    label_name = (label_name or "").strip()
+    if not sender_email or "@" not in sender_email or not label_name:
+        return 0
+
+    from datetime import datetime
+    now = datetime.utcnow().isoformat(timespec="seconds")
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    # Find any existing rows for this sender_email
+    cur.execute(
+        """
+        SELECT id
+        FROM rules
+        WHERE COALESCE(from_contains,'') = %s
+        ORDER BY id;
+        """,
+        (sender_email,),
+    )
+    rows = cur.fetchall() or []
+
+    if rows:
+        # Update ALL matching rows to avoid conflicting duplicates
+        cur.execute(
+            """
+            UPDATE rules
+            SET label_name = %s,
+                is_active = TRUE,
+                updated_at = %s
+            WHERE COALESCE(from_contains,'') = %s;
+            """,
+            (label_name, now, sender_email),
+        )
+        conn.commit()
+        conn.close()
+        return 1
+
+    # Insert new sender-email rule
+    cur.execute(
+        """
+        INSERT INTO rules
+          (label_name, from_contains, subject_contains, body_contains,
+           is_active, mark_as_read, created_at, updated_at)
+        VALUES
+          (%s, %s, %s, %s, %s, %s, %s, %s);
+        """,
+        (
+            label_name,
+            sender_email,
+            None,
+            None,
+            True,
+            False,
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return 1
+
+
+def sync_sender_email_rules_from_ll_labels(
+    service,
+    *,
+    label_prefix: str = "@LL-",
+    max_per_label: int = 200,
+    skip_free_email_domains: bool = False,  # per your request
+) -> Dict:
+    """
+    Scan all Gmail labels starting with @LL- and create/update sender-email rules.
+
+    Rule format:
+      from_contains = "john@vendor.com"   (exact sender email)
+      label_name    = "@LL-Something"
+
+    "Latest manual placement wins":
+      - If sender appears in multiple @LL- labels, we choose the label for the most recent message (by internalDate).
+      - We upsert/update the existing rule to match that label.
+
+    Returns summary dict.
+    """
+    free_domains = {
+        "gmail.com", "googlemail.com",
+        "outlook.com", "hotmail.com", "live.com",
+        "yahoo.com",
+        "icloud.com",
+        "aol.com",
+        "proton.me", "protonmail.com",
+    }
+
+    try:
+        ll_labels = _list_ll_labels(service, label_prefix)
+    except HttpError as e:
+        return {"status": "error", "error": f"Failed to list Gmail labels: {e}"}
+
+    if not ll_labels:
+        return {
+            "status": "ok",
+            "message": f"No labels found starting with {label_prefix}",
+            "created_or_updated": 0,
+            "unique_senders_considered": 0,
+            "details": [],
+        }
+
+    # sender_email -> (latest_internalDate_ms, label_name)
+    latest_map: Dict[str, Tuple[int, str]] = {}
+
+    details = []
+    total_sampled = 0
+
+    for lbl in ll_labels:
+        label_name = lbl.get("name") or ""
+        label_id = lbl.get("id") or ""
+        if not label_id:
+            continue
+
+        try:
+            msg_ids = _list_messages_for_label(service, label_id, max_per_label)
+        except HttpError as e:
+            logger.exception("Failed listing messages for label %s", label_name)
+            details.append({"label": label_name, "sampled": 0, "candidates": 0, "error": str(e)})
+            continue
+
+        sampled = 0
+        candidates = 0
+
+        for mid in msg_ids:
+            sampled += 1
+            from_h, internal_ms = _get_from_and_internal_date(service, mid)
+            sender_email = _extract_sender_email(from_h)
+            if not sender_email:
+                continue
+
+            if skip_free_email_domains:
+                dom = sender_email.split("@", 1)[1].lower().strip(".")
+                if dom in free_domains:
+                    continue
+
+            candidates += 1
+            prev = latest_map.get(sender_email)
+            if not prev or internal_ms > prev[0]:
+                latest_map[sender_email] = (internal_ms, label_name)
+
+        total_sampled += sampled
+        details.append({"label": label_name, "sampled": sampled, "candidates": candidates})
+
+    created_or_updated = 0
+    for sender_email, (_ts, label_name) in latest_map.items():
+        created_or_updated += _upsert_sender_email_rule_latest_wins(sender_email, label_name)
+
+    return {
+        "status": "ok",
+        "label_prefix": label_prefix,
+        "created_or_updated": created_or_updated,
+        "unique_senders_considered": len(latest_map),
+        "total_messages_sampled": total_sampled,
+        "details": details,
+        "params": {
+            "max_per_label": max_per_label,
+            "skip_free_email_domains": skip_free_email_domains,
         },
     }

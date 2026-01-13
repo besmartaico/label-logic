@@ -13,7 +13,7 @@ from gmail_client import (
     extract_email_fields,
 )
 from ai_labels import DEFAULT_LL_LABELS, get_allowed_ai_labels, ai_suggest_label
-from rule_learner import learn_rules_from_labeled_emails
+from rule_learner import learn_rules_from_labeled_emails, sync_sender_email_rules_from_ll_labels
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,23 @@ try:
         MAX_EMAILS_PER_RUN = 50
 except ValueError:
     MAX_EMAILS_PER_RUN = 50
+
+# NEW: sender-email learning config
+LL_LABEL_PREFIX = os.environ.get("LL_LABEL_PREFIX", "@LL-")
+try:
+    SENDER_RULES_MAX_PER_LABEL = int(os.environ.get("SENDER_RULES_MAX_PER_LABEL", "200"))
+    if SENDER_RULES_MAX_PER_LABEL <= 0:
+        SENDER_RULES_MAX_PER_LABEL = 200
+except ValueError:
+    SENDER_RULES_MAX_PER_LABEL = 200
+
+# per your request: default false
+SENDER_RULES_SKIP_FREE_DOMAINS = os.environ.get("SENDER_RULES_SKIP_FREE_DOMAINS", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 
 # -----------------------------
@@ -522,6 +539,20 @@ def run_labeler():
         logger.exception("Gmail auth failed in run_labeler")
         return jsonify({"error": f"Gmail auth failed: {e}"}), 500
 
+    # ✅ NEW STEP 0: Learn sender-email rules from ANY @LL-* labels (latest wins)
+    sender_sync_summary = {"status": "skipped", "created_or_updated": 0}
+    try:
+        sender_sync_summary = sync_sender_email_rules_from_ll_labels(
+            service,
+            label_prefix=LL_LABEL_PREFIX,
+            max_per_label=SENDER_RULES_MAX_PER_LABEL,
+            skip_free_email_domains=SENDER_RULES_SKIP_FREE_DOMAINS,  # default false per your request
+        )
+        logger.info("Sender-email rule sync summary: %s", sender_sync_summary)
+    except Exception:
+        logger.exception("Sender-email rule sync failed; continuing with existing rules/AI.")
+
+    # Reload rules AFTER learning, so new sender rules apply immediately in this run
     rules = load_active_rules()
     rule_count = 0
     ai_count = 0
@@ -620,6 +651,7 @@ def run_labeler():
             "processed": total,
             "rule_labeled": rule_count,
             "ai_labeled": ai_count,
+            "sender_rule_sync": sender_sync_summary,
         }
     )
 
