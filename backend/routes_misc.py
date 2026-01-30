@@ -135,8 +135,61 @@ def oauth2callback():
         return jsonify({"error": str(e)}), 500
 
     # After ProxyFix (in app.py), request.url should reflect the correct scheme/host.
-    flow.fetch_token(authorization_response=request.url)
+    # NOTE: oauthlib may raise a Warning as an exception when the returned token scopes
+    # do not match the requested scopes ("Scope has changed ..."). We handle that here
+    # and return a clear, actionable response instead of a 500.
+    try:
+        flow.fetch_token(authorization_response=request.url)
+    except Exception as e:
+        msg = str(e)
+        logger.exception("OAuth token fetch failed")
+
+        # Common case: Google did not grant the Gmail scope we requested.
+        if "Scope has changed" in msg or "scope" in msg.lower():
+            # Clear state so a retry starts fresh.
+            session.pop("state", None)
+
+            return (
+                jsonify(
+                    {
+                        "error": "Google did not grant the requested Gmail permissions.",
+                        "details": msg,
+                        "requested_scopes": ALL_SCOPES,
+                        "next_steps": [
+                            "1) In Google Cloud Console, ensure Gmail API is enabled for this project.",
+                            "2) Ensure your OAuth consent screen is configured; if in Testing, add your Google account as a Test User.",
+                            "3) Confirm the deployed GOOGLE_CREDENTIALS_JSON is the OAuth Client for the same project.",
+                            "4) Delete any previously stored credentials for this user (google_accounts table) and re-auth at /auth/google.",
+                        ],
+                    }
+                ),
+                400,
+            )
+
+        return jsonify({"error": msg}), 400
+
     creds = flow.credentials
+
+    # Double-check that the token actually includes gmail.modify.
+    # (Some auth flows can complete with reduced scopes.)
+    granted_scopes = set(getattr(creds, "scopes", []) or [])
+    if "https://www.googleapis.com/auth/gmail.modify" not in granted_scopes:
+        session.pop("state", None)
+        return (
+            jsonify(
+                {
+                    "error": "OAuth completed but Gmail modify permission was not granted.",
+                    "granted_scopes": sorted(granted_scopes),
+                    "requested_scopes": ALL_SCOPES,
+                    "next_steps": [
+                        "Re-run /auth/google and ensure you approve Gmail access on the consent screen.",
+                        "If you do not see a Gmail permission prompt, delete stored credentials for this user and try again.",
+                        "If still missing, verify Gmail API is enabled and your account is allowed (Test Users / publishing status).",
+                    ],
+                }
+            ),
+            400,
+        )
 
     try:
         idinfo = id_token.verify_oauth2_token(
