@@ -12,7 +12,12 @@ from gmail_client import (
     apply_label_to_message,
     extract_email_fields,
 )
-from ai_labels import DEFAULT_LL_LABELS, get_allowed_ai_labels, ai_suggest_label
+from ai_labels import (
+    DEFAULT_LL_LABELS,
+    get_allowed_ai_labels,
+    ai_suggest_label,
+    ai_suggest_labels_bulk,
+)
 from rule_learner import learn_rules_from_labeled_emails, sync_sender_email_rules_from_ll_labels
 
 logger = logging.getLogger(__name__)
@@ -48,13 +53,6 @@ try:
 except ValueError:
     SENDER_RULES_MAX_PER_LABEL = 200
 
-try:
-    SENDER_RULES_LOOKBACK_DAYS = int(os.environ.get("SENDER_RULES_LOOKBACK_DAYS", "1"))
-    if SENDER_RULES_LOOKBACK_DAYS < 0:
-        SENDER_RULES_LOOKBACK_DAYS = 0
-except ValueError:
-    SENDER_RULES_LOOKBACK_DAYS = 1
-
 # per your request: default false
 SENDER_RULES_SKIP_FREE_DOMAINS = os.environ.get("SENDER_RULES_SKIP_FREE_DOMAINS", "false").lower() in (
     "1",
@@ -62,7 +60,6 @@ SENDER_RULES_SKIP_FREE_DOMAINS = os.environ.get("SENDER_RULES_SKIP_FREE_DOMAINS"
     "yes",
     "on",
 )
-
 
 
 # -----------------------------
@@ -122,10 +119,6 @@ def email_matches_rule(sender, subject, body, rule):
 
 @rules_bp.route("/debug/rules-count", methods=["GET"])
 def debug_rules_count():
-    """
-    Quick sanity check: how many rules are in the DB?
-    If this returns 0 active rules, then 'Rules applied: 0' is expected.
-    """
     conn = get_db_connection()
     cur = conn.cursor()
 
@@ -139,15 +132,8 @@ def debug_rules_count():
     return jsonify({"total_rules": total, "active_rules": active})
 
 
-
 @rules_bp.route("/learn-rules", methods=["POST"])
 def learn_rules():
-    """
-    Learn rules by looking at existing emails already inside Gmail labels, then auto-create
-    rules in the rules table.
-
-    This is the "learning loop" that lets the system improve from how your mailbox is already organized.
-    """
     from flask import session, redirect, url_for
 
     if "google_user_id" not in session:
@@ -161,7 +147,6 @@ def learn_rules():
         logger.exception("Gmail auth failed in learn_rules")
         return jsonify({"error": f"Gmail auth failed: {e}"}), 500
 
-    # Learning parameters (env-configurable)
     try:
         max_per_label = int(os.environ.get("LEARN_MAX_PER_LABEL", "50"))
     except ValueError:
@@ -173,18 +158,20 @@ def learn_rules():
     return jsonify({"status": "ok", "created": created})
 
 
-
 @rules_bp.route("/rules", methods=["GET"])
 def rules_page():
     rules = load_active_rules()
-    return render_template("rules.html", rules=rules, default_ll_labels=DEFAULT_LL_LABELS, allowed_labels=get_allowed_ai_labels())
-
+    return render_template(
+        "rules.html",
+        rules=rules,
+        default_ll_labels=DEFAULT_LL_LABELS,
+        allowed_labels=get_allowed_ai_labels(),
+    )
 
 
 @rules_bp.route("/api/rules", methods=["GET"])
 def api_rules():
     return jsonify(load_active_rules())
-
 
 
 @rules_bp.route("/api/rules", methods=["POST"])
@@ -229,7 +216,6 @@ def api_create_rule():
     conn.close()
 
     return jsonify({"status": "ok", "id": new_id})
-
 
 
 @rules_bp.route("/api/rules/<int:rule_id>", methods=["PUT"])
@@ -280,7 +266,6 @@ def api_update_rule(rule_id: int):
     return jsonify({"status": "ok"})
 
 
-
 @rules_bp.route("/api/rules/<int:rule_id>", methods=["DELETE"])
 def api_delete_rule(rule_id: int):
     conn = get_db_connection()
@@ -291,68 +276,9 @@ def api_delete_rule(rule_id: int):
     return jsonify({"status": "ok"})
 
 
-
 @rules_bp.route("/api/labels", methods=["GET"])
 def api_labels():
-    """
-    Returns allowed AI labels + default labels. Frontend uses this to build dropdowns.
-    """
     return jsonify({"default_labels": DEFAULT_LL_LABELS, "allowed_labels": get_allowed_ai_labels()})
-
-
-
-@rules_bp.route("/mark-all-read", methods=["POST"])
-def mark_all_read():
-    """
-    Mark all messages in INBOX as read.
-    NOTE: This already uses batchModify elsewhere in this file (not touched in Step 1).
-    """
-    try:
-        service = get_gmail_service_for_current_user()
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 401
-    except Exception as e:
-        logger.exception("Gmail auth failed in mark_all_read")
-        return jsonify({"error": f"Gmail auth failed: {e}"}), 500
-
-    # List messages in INBOX
-    try:
-        msg_list = (
-            service.users()
-            .messages()
-            .list(userId="me", labelIds=["INBOX"], maxResults=500)
-            .execute()
-        )
-        messages = msg_list.get("messages", [])
-    except HttpError as e:
-        logger.exception("Gmail list failed in mark_all_read")
-        return jsonify({"error": f"Gmail list failed: {e}"}), 500
-
-    all_ids = [m["id"] for m in messages if m.get("id")]
-    if not all_ids:
-        return jsonify({"status": "ok", "updated": 0, "message": "No messages in inbox."})
-
-    # Mark them read via batchModify
-    try:
-        service.users().messages().batchModify(
-            userId="me",
-            body={
-                "ids": all_ids,
-                "removeLabelIds": ["UNREAD"],
-            },
-        ).execute()
-    except HttpError as e:
-        logger.exception("Gmail batchModify failed")
-        return jsonify({"error": f"Gmail batchModify failed: {e}"}), 500
-
-    return jsonify(
-        {
-            "status": "ok",
-            "updated": len(all_ids),
-            "message": f"Marked {len(all_ids)} messages as read.",
-        }
-    )
-
 
 
 @rules_bp.route("/run-labeler", methods=["POST"])
@@ -365,21 +291,20 @@ def run_labeler():
         logger.exception("Gmail auth failed in run_labeler")
         return jsonify({"error": f"Gmail auth failed: {e}"}), 500
 
-    # ✅ NEW STEP 0: Learn sender-email rules from ANY @LL-* labels (latest wins)
+    # Learn sender-email rules from ANY @LL-* labels (latest wins)
     sender_sync_summary = {"status": "skipped", "created_or_updated": 0}
     try:
         sender_sync_summary = sync_sender_email_rules_from_ll_labels(
             service,
             label_prefix=LL_LABEL_PREFIX,
             max_per_label=SENDER_RULES_MAX_PER_LABEL,
-            skip_free_email_domains=SENDER_RULES_SKIP_FREE_DOMAINS,  # default false per your request
-            lookback_days=SENDER_RULES_LOOKBACK_DAYS,
+            skip_free_email_domains=SENDER_RULES_SKIP_FREE_DOMAINS,
         )
         logger.info("Sender-email rule sync summary: %s", sender_sync_summary)
     except Exception:
         logger.exception("Sender-email rule sync failed; continuing with existing rules/AI.")
 
-    # Reload rules AFTER learning, so new sender rules apply immediately in this run
+    # Reload rules AFTER learning
     rules = load_active_rules()
     rule_count = 0
     ai_count = 0
@@ -396,6 +321,10 @@ def run_labeler():
     except HttpError as e:
         logger.exception("Gmail list failed in run_labeler")
         return jsonify({"error": f"Gmail list failed: {e}"}), 500
+
+    # Collect unmatched emails to send to the AI in ONE bulk request.
+    ai_candidates = []  # list of dicts: {id, sender, subject, body}
+    ai_context = {}  # gmail_id -> {thread_id, sender, subject, snippet}
 
     for m in messages:
         gmail_id = m["id"]
@@ -443,41 +372,97 @@ def run_labeler():
                 break
 
         if not matched_label:
-            label, conf = ai_suggest_label(sender, subject, body)
-            if label:
-                apply_label_to_message(
-                    service,
-                    gmail_id,
-                    label,
-                    remove_from_inbox=ARCHIVE_AI_LABELED,
-                    mark_as_read=False,
-                )
-                record_labeled_email(
-                    gmail_id,
-                    thread_id,
-                    sender,
-                    subject,
-                    snippet,
-                    label,
-                    is_ai_labeled=True,
-                    source="ai",
-                )
-                record_ai_suggestion(
-                    gmail_id=gmail_id,
-                    suggested_label=label,
-                    confidence=float(conf or 0.0),
-                    reason="model",
-                )
-                ai_count += 1
+            ai_candidates.append({"id": gmail_id, "sender": sender, "subject": subject, "body": body})
+            ai_context[gmail_id] = {
+                "thread_id": thread_id,
+                "sender": sender,
+                "subject": subject,
+                "snippet": snippet,
+            }
 
-        # loop continues
+    # --- Bulk AI classification (single OpenAI call) ---
+    ai_suggestions = {}
+    if ai_candidates:
+        ai_suggestions = ai_suggest_labels_bulk(ai_candidates)
+
+        # If bulk failed (e.g., parsing), fall back to a small number of single calls
+        if not ai_suggestions:
+            try:
+                max_fallback = int(os.environ.get("MAX_AI_FALLBACK_SINGLE_CALLS", "5"))
+            except ValueError:
+                max_fallback = 5
+            max_fallback = max(0, min(max_fallback, 10))
+
+            logger.warning("Bulk AI returned no results; falling back to up to %d single calls", max_fallback)
+            for it in ai_candidates[:max_fallback]:
+                gid = it["id"]
+                label, conf = ai_suggest_label(it.get("sender"), it.get("subject"), it.get("body"))
+                ai_suggestions[gid] = (label, conf)
+
+    # Apply AI suggestions
+    for gmail_id, (label, conf) in (ai_suggestions or {}).items():
+        if not label:
+            continue
+
+        ctx = ai_context.get(gmail_id) or {}
+        thread_id = ctx.get("thread_id", "")
+        sender = ctx.get("sender", "")
+        subject = ctx.get("subject", "")
+        snippet = ctx.get("snippet", "")
+
+        apply_label_to_message(
+            service,
+            gmail_id,
+            label,
+            remove_from_inbox=ARCHIVE_AI_LABELED,
+            mark_as_read=False,
+        )
+        record_labeled_email(
+            gmail_id,
+            thread_id,
+            sender,
+            subject,
+            snippet,
+            label,
+            is_ai_labeled=True,
+            source="ai",
+        )
+        record_ai_suggestion(gmail_id, label, conf)
+        ai_count += 1
+
+    logger.info(
+        "run_labeler finished: processed=%d rule_labeled=%d ai_labeled=%d",
+        total,
+        rule_count,
+        ai_count,
+    )
 
     return jsonify(
         {
             "status": "ok",
-            "total_scanned": total,
-            "rules_applied": rule_count,
-            "ai_applied": ai_count,
-            "sender_sync": sender_sync_summary,
+            "processed": total,
+            "rule_labeled": rule_count,
+            "ai_labeled": ai_count,
+            "sender_rule_sync": sender_sync_summary,
         }
     )
+
+
+@rules_bp.route("/init-default-labels", methods=["GET", "POST"])
+def init_default_labels():
+    try:
+        service = get_gmail_service_for_current_user()
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 401
+    except Exception as e:
+        logger.exception("Gmail auth failed in init_default_labels")
+        return jsonify({"error": f"Gmail auth failed: {e}"}), 500
+
+    ensured = []
+
+    for name in DEFAULT_LL_LABELS:
+        label_id = get_or_create_gmail_label(service, name)
+        if label_id:
+            ensured.append({"name": name, "id": label_id})
+
+    return jsonify({"status": "ok", "count": len(ensured), "ensured_labels": ensured})
