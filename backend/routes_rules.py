@@ -24,7 +24,10 @@ logger = logging.getLogger(__name__)
 
 rules_bp = Blueprint("rules", __name__)
 
+# -----------------------------
 # Env-based behavior
+# -----------------------------
+
 ARCHIVE_RULE_LABELED = os.environ.get("ARCHIVE_RULE_LABELED", "true").lower() in (
     "1",
     "true",
@@ -46,7 +49,7 @@ try:
 except ValueError:
     MAX_EMAILS_PER_RUN = 50
 
-# NEW: process only unread emails?
+# Process only unread messages in INBOX?
 PROCESS_UNREAD_ONLY = os.environ.get("PROCESS_UNREAD_ONLY", "true").lower() in (
     "1",
     "true",
@@ -54,8 +57,9 @@ PROCESS_UNREAD_ONLY = os.environ.get("PROCESS_UNREAD_ONLY", "true").lower() in (
     "on",
 )
 
-# sender-email learning config
+# Sender-email learning config
 LL_LABEL_PREFIX = os.environ.get("LL_LABEL_PREFIX", "@LL-")
+
 try:
     SENDER_RULES_MAX_PER_LABEL = int(os.environ.get("SENDER_RULES_MAX_PER_LABEL", "200"))
     if SENDER_RULES_MAX_PER_LABEL <= 0:
@@ -63,7 +67,7 @@ try:
 except ValueError:
     SENDER_RULES_MAX_PER_LABEL = 200
 
-# per your request: default false
+# Default false (per your earlier preference)
 SENDER_RULES_SKIP_FREE_DOMAINS = os.environ.get("SENDER_RULES_SKIP_FREE_DOMAINS", "false").lower() in (
     "1",
     "true",
@@ -94,8 +98,24 @@ def load_active_rules():
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT * FROM rules
+        SELECT *
+        FROM rules
         WHERE is_active = TRUE
+        ORDER BY id;
+        """
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [db_row_to_rule(r) for r in rows]
+
+
+def load_all_rules():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT *
+        FROM rules
         ORDER BY id;
         """
     )
@@ -123,7 +143,7 @@ def email_matches_rule(sender, subject, body, rule):
 
 
 # -----------------------------
-# Debug + Admin
+# Debug
 # -----------------------------
 
 
@@ -140,6 +160,149 @@ def debug_rules_count():
 
     conn.close()
     return jsonify({"total_rules": total, "active_rules": active})
+
+
+# -----------------------------
+# UI Pages
+# -----------------------------
+
+
+@rules_bp.route("/rules", methods=["GET"])
+def rules_page():
+    # UI usually wants ALL rules (active + inactive), but your old UI might only show active.
+    # If you want only active, swap load_all_rules() -> load_active_rules()
+    rules = load_all_rules()
+    return render_template(
+        "rules.html",
+        rules=rules,
+        default_ll_labels=DEFAULT_LL_LABELS,
+        allowed_labels=get_allowed_ai_labels(),
+    )
+
+
+# -----------------------------
+# Rules API (THIS FIXES YOUR 404)
+# -----------------------------
+
+
+@rules_bp.route("/api/rules", methods=["GET"])
+def api_rules():
+    # If your UI expects only active rules, use load_active_rules().
+    # Most rule editors expect to see inactive too.
+    return jsonify(load_all_rules())
+
+
+@rules_bp.route("/api/rules", methods=["POST"])
+def api_create_rule():
+    payload = request.get_json(force=True) or {}
+
+    label_name = (payload.get("label_name") or "").strip()
+    from_contains = (payload.get("from_contains") or "").strip()
+    subject_contains = (payload.get("subject_contains") or "").strip()
+    body_contains = (payload.get("body_contains") or "").strip()
+    is_active = bool(payload.get("is_active", True))
+    mark_as_read = bool(payload.get("mark_as_read", False))
+
+    if not label_name:
+        return jsonify({"error": "label_name is required"}), 400
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    cur.execute(
+        """
+        INSERT INTO rules
+          (label_name, from_contains, subject_contains, body_contains,
+           is_active, mark_as_read, created_at, updated_at)
+        VALUES
+          (%s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING id;
+        """,
+        (
+            label_name,
+            from_contains or None,
+            subject_contains or None,
+            body_contains or None,
+            is_active,
+            mark_as_read,
+            now,
+            now,
+        ),
+    )
+    new_id = cur.fetchone()["id"]
+    conn.commit()
+    conn.close()
+
+    return jsonify({"status": "ok", "id": new_id})
+
+
+@rules_bp.route("/api/rules/<int:rule_id>", methods=["PUT"])
+def api_update_rule(rule_id: int):
+    payload = request.get_json(force=True) or {}
+
+    label_name = (payload.get("label_name") or "").strip()
+    from_contains = (payload.get("from_contains") or "").strip()
+    subject_contains = (payload.get("subject_contains") or "").strip()
+    body_contains = (payload.get("body_contains") or "").strip()
+    is_active = bool(payload.get("is_active", True))
+    mark_as_read = bool(payload.get("mark_as_read", False))
+
+    if not label_name:
+        return jsonify({"error": "label_name is required"}), 400
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    cur.execute(
+        """
+        UPDATE rules
+        SET label_name=%s,
+            from_contains=%s,
+            subject_contains=%s,
+            body_contains=%s,
+            is_active=%s,
+            mark_as_read=%s,
+            updated_at=%s
+        WHERE id=%s;
+        """,
+        (
+            label_name,
+            from_contains or None,
+            subject_contains or None,
+            body_contains or None,
+            is_active,
+            mark_as_read,
+            now,
+            rule_id,
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({"status": "ok"})
+
+
+@rules_bp.route("/api/rules/<int:rule_id>", methods=["DELETE"])
+def api_delete_rule(rule_id: int):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM rules WHERE id=%s;", (rule_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+
+@rules_bp.route("/api/labels", methods=["GET"])
+def api_labels():
+    return jsonify({"default_labels": DEFAULT_LL_LABELS, "allowed_labels": get_allowed_ai_labels()})
+
+
+# -----------------------------
+# Learning / Ops
+# -----------------------------
 
 
 @rules_bp.route("/learn-rules", methods=["POST"])
@@ -170,20 +333,50 @@ def learn_rules():
     return jsonify({"status": "ok", "created": created})
 
 
-@rules_bp.route("/rules", methods=["GET"])
-def rules_page():
-    rules = load_active_rules()
-    return render_template(
-        "rules.html",
-        rules=rules,
-        default_ll_labels=DEFAULT_LL_LABELS,
-        allowed_labels=get_allowed_ai_labels(),
-    )
+@rules_bp.route("/mark-all-read", methods=["POST"])
+def mark_all_read():
+    try:
+        service = get_gmail_service_for_current_user()
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 401
+    except Exception as e:
+        logger.exception("Gmail auth failed in mark_all_read")
+        return jsonify({"error": f"Gmail auth failed: {e}"}), 500
+
+    try:
+        msg_list = (
+            service.users()
+            .messages()
+            .list(userId="me", labelIds=["INBOX"], maxResults=500)
+            .execute()
+        )
+        messages = msg_list.get("messages", [])
+    except HttpError as e:
+        logger.exception("Gmail list failed in mark_all_read")
+        return jsonify({"error": f"Gmail list failed: {e}"}), 500
+
+    all_ids = [m["id"] for m in messages if m.get("id")]
+    if not all_ids:
+        return jsonify({"status": "ok", "updated": 0, "message": "No messages in inbox."})
+
+    try:
+        service.users().messages().batchModify(
+            userId="me",
+            body={
+                "ids": all_ids,
+                "removeLabelIds": ["UNREAD"],
+            },
+        ).execute()
+    except HttpError as e:
+        logger.exception("Gmail batchModify failed in mark_all_read")
+        return jsonify({"error": f"Gmail batchModify failed: {e}"}), 500
+
+    return jsonify({"status": "ok", "updated": len(all_ids)})
 
 
-@rules_bp.route("/api/labels", methods=["GET"])
-def api_labels():
-    return jsonify({"default_labels": DEFAULT_LL_LABELS, "allowed_labels": get_allowed_ai_labels()})
+# -----------------------------
+# Main Labeler Run
+# -----------------------------
 
 
 @rules_bp.route("/run-labeler", methods=["POST"])
@@ -196,7 +389,7 @@ def run_labeler():
         logger.exception("Gmail auth failed in run_labeler")
         return jsonify({"error": f"Gmail auth failed: {e}"}), 500
 
-    # Learn sender-email rules from ANY @LL-* labels (latest wins)
+    # Step 0: Sync sender-email rules from @LL-* labels
     sender_sync_summary = {"status": "skipped", "created_or_updated": 0}
     try:
         sender_sync_summary = sync_sender_email_rules_from_ll_labels(
@@ -209,13 +402,12 @@ def run_labeler():
     except Exception:
         logger.exception("Sender-email rule sync failed; continuing with existing rules/AI.")
 
-    # Reload rules AFTER learning
     rules = load_active_rules()
+
     rule_count = 0
     ai_count = 0
     total = 0
 
-    # ✅ ONLY UNREAD (optional)
     label_ids = ["INBOX"]
     if PROCESS_UNREAD_ONLY:
         label_ids.append("UNREAD")
@@ -232,9 +424,8 @@ def run_labeler():
         logger.exception("Gmail list failed in run_labeler")
         return jsonify({"error": f"Gmail list failed: {e}"}), 500
 
-    # Collect unmatched emails to send to the AI in ONE bulk request.
-    ai_candidates = []  # list of dicts: {id, sender, subject, body}
-    ai_context = {}  # gmail_id -> {thread_id, sender, subject, snippet}
+    ai_candidates = []  # list of {id, sender, subject, body}
+    ai_context = {}     # gmail_id -> {thread_id, sender, subject, snippet}
 
     for m in messages:
         gmail_id = m["id"]
@@ -261,6 +452,7 @@ def run_labeler():
             if email_matches_rule(sender, subject, body, rule):
                 matched_label = rule["label_name"]
                 matched_rule_mark_read = rule.get("mark_as_read", False)
+
                 apply_label_to_message(
                     service,
                     gmail_id,
@@ -282,9 +474,7 @@ def run_labeler():
                 break
 
         if not matched_label:
-            ai_candidates.append(
-                {"id": gmail_id, "sender": sender, "subject": subject, "body": body}
-            )
+            ai_candidates.append({"id": gmail_id, "sender": sender, "subject": subject, "body": body})
             ai_context[gmail_id] = {
                 "thread_id": thread_id,
                 "sender": sender,
@@ -292,12 +482,12 @@ def run_labeler():
                 "snippet": snippet,
             }
 
-    # --- Bulk AI classification (single OpenAI call) ---
+    # Bulk AI (single call)
     ai_suggestions = {}
     if ai_candidates:
         ai_suggestions = ai_suggest_labels_bulk(ai_candidates)
 
-        # If bulk failed, fall back to a small number of single calls
+        # Fallback (small number) if bulk fails
         if not ai_suggestions:
             try:
                 max_fallback = int(os.environ.get("MAX_AI_FALLBACK_SINGLE_CALLS", "5"))
@@ -305,16 +495,13 @@ def run_labeler():
                 max_fallback = 5
             max_fallback = max(0, min(max_fallback, 10))
 
-            logger.warning(
-                "Bulk AI returned no results; falling back to up to %d single calls",
-                max_fallback,
-            )
+            logger.warning("Bulk AI returned no results; falling back to up to %d single calls", max_fallback)
             for it in ai_candidates[:max_fallback]:
                 gid = it["id"]
                 label, conf = ai_suggest_label(it.get("sender"), it.get("subject"), it.get("body"))
                 ai_suggestions[gid] = (label, conf)
 
-    # Apply AI suggestions
+    # Apply AI labels
     for gmail_id, (label, conf) in (ai_suggestions or {}).items():
         if not label:
             continue
@@ -377,7 +564,6 @@ def init_default_labels():
         return jsonify({"error": f"Gmail auth failed: {e}"}), 500
 
     ensured = []
-
     for name in DEFAULT_LL_LABELS:
         label_id = get_or_create_gmail_label(service, name)
         if label_id:
