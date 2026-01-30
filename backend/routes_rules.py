@@ -37,6 +37,8 @@ ARCHIVE_AI_LABELED = os.environ.get("ARCHIVE_AI_LABELED", "true").lower() in (
     "yes",
     "on",
 )
+
+# How many inbox messages to process per run
 try:
     MAX_EMAILS_PER_RUN = int(os.environ.get("MAX_EMAILS_PER_RUN", "50"))
     if MAX_EMAILS_PER_RUN <= 0:
@@ -44,7 +46,15 @@ try:
 except ValueError:
     MAX_EMAILS_PER_RUN = 50
 
-# NEW: sender-email learning config
+# NEW: process only unread emails?
+PROCESS_UNREAD_ONLY = os.environ.get("PROCESS_UNREAD_ONLY", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
+# sender-email learning config
 LL_LABEL_PREFIX = os.environ.get("LL_LABEL_PREFIX", "@LL-")
 try:
     SENDER_RULES_MAX_PER_LABEL = int(os.environ.get("SENDER_RULES_MAX_PER_LABEL", "200"))
@@ -113,7 +123,7 @@ def email_matches_rule(sender, subject, body, rule):
 
 
 # -----------------------------
-# Debug
+# Debug + Admin
 # -----------------------------
 
 
@@ -153,7 +163,9 @@ def learn_rules():
         max_per_label = 50
 
     allowed_labels = get_allowed_ai_labels()
-    created = learn_rules_from_labeled_emails(service, allowed_labels=allowed_labels, max_per_label=max_per_label)
+    created = learn_rules_from_labeled_emails(
+        service, allowed_labels=allowed_labels, max_per_label=max_per_label
+    )
 
     return jsonify({"status": "ok", "created": created})
 
@@ -167,113 +179,6 @@ def rules_page():
         default_ll_labels=DEFAULT_LL_LABELS,
         allowed_labels=get_allowed_ai_labels(),
     )
-
-
-@rules_bp.route("/api/rules", methods=["GET"])
-def api_rules():
-    return jsonify(load_active_rules())
-
-
-@rules_bp.route("/api/rules", methods=["POST"])
-def api_create_rule():
-    payload = request.get_json(force=True) or {}
-    label_name = (payload.get("label_name") or "").strip()
-    from_contains = (payload.get("from_contains") or "").strip()
-    subject_contains = (payload.get("subject_contains") or "").strip()
-    body_contains = (payload.get("body_contains") or "").strip()
-    is_active = bool(payload.get("is_active", True))
-    mark_as_read = bool(payload.get("mark_as_read", False))
-
-    if not label_name:
-        return jsonify({"error": "label_name is required"}), 400
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    now = datetime.utcnow().isoformat(timespec="seconds")
-    cur.execute(
-        """
-        INSERT INTO rules
-          (label_name, from_contains, subject_contains, body_contains,
-           is_active, mark_as_read, created_at, updated_at)
-        VALUES
-          (%s, %s, %s, %s, %s, %s, %s, %s)
-        RETURNING id;
-        """,
-        (
-            label_name,
-            from_contains or None,
-            subject_contains or None,
-            body_contains or None,
-            is_active,
-            mark_as_read,
-            now,
-            now,
-        ),
-    )
-    new_id = cur.fetchone()["id"]
-    conn.commit()
-    conn.close()
-
-    return jsonify({"status": "ok", "id": new_id})
-
-
-@rules_bp.route("/api/rules/<int:rule_id>", methods=["PUT"])
-def api_update_rule(rule_id: int):
-    payload = request.get_json(force=True) or {}
-
-    label_name = (payload.get("label_name") or "").strip()
-    from_contains = (payload.get("from_contains") or "").strip()
-    subject_contains = (payload.get("subject_contains") or "").strip()
-    body_contains = (payload.get("body_contains") or "").strip()
-    is_active = bool(payload.get("is_active", True))
-    mark_as_read = bool(payload.get("mark_as_read", False))
-
-    if not label_name:
-        return jsonify({"error": "label_name is required"}), 400
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    now = datetime.utcnow().isoformat(timespec="seconds")
-    cur.execute(
-        """
-        UPDATE rules
-        SET label_name=%s,
-            from_contains=%s,
-            subject_contains=%s,
-            body_contains=%s,
-            is_active=%s,
-            mark_as_read=%s,
-            updated_at=%s
-        WHERE id=%s;
-        """,
-        (
-            label_name,
-            from_contains or None,
-            subject_contains or None,
-            body_contains or None,
-            is_active,
-            mark_as_read,
-            now,
-            rule_id,
-        ),
-    )
-
-    conn.commit()
-    conn.close()
-
-    return jsonify({"status": "ok"})
-
-
-@rules_bp.route("/api/rules/<int:rule_id>", methods=["DELETE"])
-def api_delete_rule(rule_id: int):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM rules WHERE id=%s;", (rule_id,))
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "ok"})
 
 
 @rules_bp.route("/api/labels", methods=["GET"])
@@ -310,11 +215,16 @@ def run_labeler():
     ai_count = 0
     total = 0
 
+    # ✅ ONLY UNREAD (optional)
+    label_ids = ["INBOX"]
+    if PROCESS_UNREAD_ONLY:
+        label_ids.append("UNREAD")
+
     try:
         msg_list = (
             service.users()
             .messages()
-            .list(userId="me", labelIds=["INBOX"], maxResults=MAX_EMAILS_PER_RUN)
+            .list(userId="me", labelIds=label_ids, maxResults=MAX_EMAILS_PER_RUN)
             .execute()
         )
         messages = msg_list.get("messages", [])
@@ -372,7 +282,9 @@ def run_labeler():
                 break
 
         if not matched_label:
-            ai_candidates.append({"id": gmail_id, "sender": sender, "subject": subject, "body": body})
+            ai_candidates.append(
+                {"id": gmail_id, "sender": sender, "subject": subject, "body": body}
+            )
             ai_context[gmail_id] = {
                 "thread_id": thread_id,
                 "sender": sender,
@@ -385,7 +297,7 @@ def run_labeler():
     if ai_candidates:
         ai_suggestions = ai_suggest_labels_bulk(ai_candidates)
 
-        # If bulk failed (e.g., parsing), fall back to a small number of single calls
+        # If bulk failed, fall back to a small number of single calls
         if not ai_suggestions:
             try:
                 max_fallback = int(os.environ.get("MAX_AI_FALLBACK_SINGLE_CALLS", "5"))
@@ -393,7 +305,10 @@ def run_labeler():
                 max_fallback = 5
             max_fallback = max(0, min(max_fallback, 10))
 
-            logger.warning("Bulk AI returned no results; falling back to up to %d single calls", max_fallback)
+            logger.warning(
+                "Bulk AI returned no results; falling back to up to %d single calls",
+                max_fallback,
+            )
             for it in ai_candidates[:max_fallback]:
                 gid = it["id"]
                 label, conf = ai_suggest_label(it.get("sender"), it.get("subject"), it.get("body"))
@@ -431,10 +346,11 @@ def run_labeler():
         ai_count += 1
 
     logger.info(
-        "run_labeler finished: processed=%d rule_labeled=%d ai_labeled=%d",
+        "run_labeler finished: processed=%d rule_labeled=%d ai_labeled=%d unread_only=%s",
         total,
         rule_count,
         ai_count,
+        PROCESS_UNREAD_ONLY,
     )
 
     return jsonify(
@@ -443,6 +359,8 @@ def run_labeler():
             "processed": total,
             "rule_labeled": rule_count,
             "ai_labeled": ai_count,
+            "unread_only": PROCESS_UNREAD_ONLY,
+            "max_emails_per_run": MAX_EMAILS_PER_RUN,
             "sender_rule_sync": sender_sync_summary,
         }
     )
