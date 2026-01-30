@@ -352,7 +352,36 @@ def record_labeled_email(
     conn.close()
 
 
-def record_ai_suggestion(gmail_id, label, confidence):
+def record_ai_suggestion(
+    gmail_id,
+    label=None,
+    confidence=None,
+    *,
+    suggested_label=None,
+    **kwargs,
+):
+    """
+    Backwards-compatible AI suggestion logger.
+
+    Older code called:
+        record_ai_suggestion(gmail_id, label, confidence)
+
+    Newer code calls:
+        record_ai_suggestion(gmail_id=gmail_id, suggested_label=label, confidence=..., reason="model")
+
+    We store into ai_label_suggestions(gmail_id, suggested_label, confidence, accepted, created_at).
+    Extra kwargs (like 'reason') are accepted and ignored for compatibility.
+    """
+    final_label = (suggested_label or label or "").strip()
+    if not final_label:
+        # Nothing to record
+        return
+
+    try:
+        conf_val = float(confidence) if confidence is not None else None
+    except Exception:
+        conf_val = None
+
     conn = get_db_connection()
     cur = conn.cursor()
     now = datetime.utcnow().isoformat(timespec="seconds")
@@ -364,7 +393,7 @@ def record_ai_suggestion(gmail_id, label, confidence):
         VALUES
             (%s, %s, %s, %s, %s);
         """,
-        (gmail_id, label, confidence, True, now),
+        (gmail_id, final_label, conf_val, True, now),
     )
 
     conn.commit()
