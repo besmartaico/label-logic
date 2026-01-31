@@ -1,15 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}Label Logic – Rules{% endblock %}
-
 {% block content %}
+<h2 class="mb-3">Rules</h2>
 
 <div class="card mb-4">
   <div class="card-header d-flex justify-content-between align-items-center">
     <span>Run Labeler</span>
     <div>
-      <button class="btn btn-sm btn-outline-secondary me-2" id="init-labels-btn">
-        Initialize Default LL Labels
+      <button class="btn btn-sm btn-outline-primary" id="init-default-labels-btn">
+        Init Default @LL Labels
       </button>
       <button class="btn btn-sm btn-primary" id="run-labeler-btn">
         Run Now
@@ -19,6 +18,11 @@
   <div class="card-body">
     <div id="init-labels-status" class="mb-2 small text-muted"></div>
     <div id="run-labeler-status" class="small text-muted"></div>
+    <div class="mt-2">
+      <a id="download-run-log-link" href="/download-run-log" class="small" target="_blank" rel="noopener">
+        Download last run log
+      </a>
+    </div>
   </div>
 </div>
 
@@ -29,10 +33,10 @@
       Refresh Labels
     </button>
   </div>
-  <div class="card-body p-0">
+  <div class="card-body">
     <div class="table-responsive">
-      <table class="table table-sm mb-0" id="labels-table">
-        <thead class="table-light">
+      <table class="table table-sm table-striped align-middle">
+        <thead>
           <tr>
             <th>Label</th>
             <th class="text-end">Unread</th>
@@ -40,118 +44,91 @@
             <th class="text-end">Actions</th>
           </tr>
         </thead>
-        <tbody>
-          <tr>
-            <td colspan="4" class="text-center text-muted small">
-              Labels will load automatically, or click "Refresh Labels" to reload.
-            </td>
-          </tr>
+        <tbody id="labels-table-body">
+          <tr><td colspan="4" class="text-muted">Loading…</td></tr>
         </tbody>
       </table>
     </div>
-    <div id="labels-status" class="p-2 small text-muted"></div>
+    <div id="labels-status" class="small text-muted"></div>
   </div>
 </div>
 
 <div class="card mb-4">
-  <div class="card-header">Add / Edit Rule</div>
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span>Create / Update Rule</span>
+    <button class="btn btn-sm btn-outline-secondary" id="clear-btn">Clear</button>
+  </div>
+
   <div class="card-body">
-
-    <div id="rule-status" class="mb-3 small text-muted"></div>
-
-    <form id="rule-form">
-      <input type="hidden" id="rule-id" />
-
-      <div class="mb-3">
-        <label class="form-label" for="label-select">Label</label>
-        <div class="input-group">
-          <select id="label-select" class="form-select" style="max-width: 240px;">
-            <option value="">-- Choose existing label --</option>
-            <option value="__custom__">Use custom text</option>
-          </select>
-          <input
-            type="text"
-            id="label-name"
-            class="form-control"
-            placeholder="Label name"
-            required
-          />
-        </div>
-        <div class="form-text">
-          Choose an existing Gmail label or type a new label name.
-        </div>
+    <form id="rule-form" class="mb-2">
+      <div class="mb-2">
+        <label class="form-label">Label Name</label>
+        <input class="form-control" id="label-name" placeholder="@LL-Finance" required />
       </div>
 
-      <div class="mb-3">
-        <label class="form-label" for="from-contains">From contains</label>
-        <input type="text" id="from-contains" class="form-control" />
-        <div class="form-text">
-          Match on any part of the sender email (e.g. <code>@amazon.com</code> or
-          <code>billing@</code>).
-        </div>
+      <div class="mb-2">
+        <label class="form-label">From contains</label>
+        <input class="form-control" id="from-contains" placeholder="example.com" />
       </div>
 
-      <div class="mb-3">
-        <label class="form-label" for="subject-contains">Subject contains</label>
-        <input type="text" id="subject-contains" class="form-control" />
+      <div class="mb-2">
+        <label class="form-label">Subject contains</label>
+        <input class="form-control" id="subject-contains" placeholder="invoice" />
       </div>
 
-      <div class="mb-3">
-        <label class="form-label" for="body-contains">Body contains</label>
-        <input type="text" id="body-contains" class="form-control" />
-        <div class="form-text">
-          Any of these fields can be left blank. If more than one field is filled,
-          the rule matches if <strong>any</strong> field matches (OR logic).
-        </div>
+      <div class="mb-2">
+        <label class="form-label">Body contains</label>
+        <input class="form-control" id="body-contains" placeholder="payment due" />
       </div>
 
       <div class="form-check mb-2">
         <input class="form-check-input" type="checkbox" id="is-active" checked />
-        <label class="form-check-label" for="is-active">Rule is active</label>
+        <label class="form-check-label" for="is-active">Active</label>
       </div>
 
       <div class="form-check mb-3">
         <input class="form-check-input" type="checkbox" id="mark-as-read" />
-        <label class="form-check-label" for="mark-as-read">
-          Mark emails as read when this rule applies
-        </label>
+        <label class="form-check-label" for="mark-as-read">Mark as read when rule matches</label>
       </div>
 
-      <button type="submit" class="btn btn-primary me-2" id="save-btn">Save Rule</button>
-      <button type="button" class="btn btn-secondary" id="clear-btn">Clear Form</button>
+      <button class="btn btn-primary" type="submit">Save Rule</button>
     </form>
+
+    <div id="rule-status" class="small text-muted"></div>
   </div>
 </div>
 
-<div class="card">
-  <div class="card-header">Existing Rules</div>
-  <div class="card-body p-0">
+<div class="card mb-4">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span>Existing Rules</span>
+    <div>
+      <button class="btn btn-sm btn-outline-secondary" id="refresh-rules-btn">Refresh</button>
+      <button class="btn btn-sm btn-outline-primary" id="learn-rules-btn">Learn Rules</button>
+    </div>
+  </div>
+  <div class="card-body">
+    <div id="learn-status" class="small text-muted mb-2"></div>
     <div class="table-responsive">
-      <table class="table table-striped mb-0" id="rules-table">
-        <thead class="table-light">
+      <table class="table table-sm table-striped align-middle">
+        <thead>
           <tr>
             <th>ID</th>
             <th>Label</th>
-            <th>From contains</th>
-            <th>Subject contains</th>
-            <th>Body contains</th>
+            <th>From</th>
+            <th>Subject</th>
+            <th>Body</th>
             <th>Active</th>
             <th>Mark Read</th>
-            <th style="width: 140px;">Actions</th>
+            <th class="text-end">Actions</th>
           </tr>
         </thead>
-        <tbody>
-          <tr>
-            <td colspan="8" class="text-center text-muted small">
-              No rules yet. Create one above.
-            </td>
-          </tr>
+        <tbody id="rules-table-body">
+          <tr><td colspan="8" class="text-muted">Loading…</td></tr>
         </tbody>
       </table>
     </div>
   </div>
 </div>
-
 {% endblock %}
 
 {% block scripts %}
