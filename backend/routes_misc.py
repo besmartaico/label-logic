@@ -86,7 +86,7 @@ def _build_flow(state: str | None = None) -> Flow:
 def index():
     if "google_user_id" not in session:
         return redirect(url_for("misc.auth_google"))
-    return redirect(url_for("rules.rules_page"))
+    return redirect(url_for("rules.dashboard_page"))
 
 
 @misc_bp.route("/health")
@@ -219,7 +219,7 @@ def oauth2callback():
     session["email"] = email
 
     logger.info("User logged in: %s (%s)", email, google_user_id)
-    return redirect(url_for("rules.rules_page"))
+    return redirect(url_for("rules.dashboard_page"))
 
 
 @misc_bp.route("/logout")
@@ -258,223 +258,78 @@ def debug_creds():
     """
     uid = session.get("google_user_id")
     if not uid:
-        return jsonify({"error": "no session google_user_id"}), 401
+        return jsonify({"error": "No google_user_id in session"}), 401
 
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT email, credentials_json
-            FROM google_accounts
-            WHERE google_user_id = %s;
-            """,
-            (uid,),
-        )
-        row = cur.fetchone()
-        conn.close()
-
-        return jsonify(
-            {
-                "google_user_id": uid,
-                "found_in_db": bool(row),
-                "db_email": row["email"] if row else None,
-                "has_credentials_json": bool(row["credentials_json"]) if row else False,
-            }
-        )
-    except Exception as e:
-        logger.exception("debug_creds failed")
-        return jsonify({"error": str(e)}), 500
-
-
-@misc_bp.route("/debug/db-path", methods=["GET"])
-def debug_db_path():
-    """
-    Postgres-friendly DB debug endpoint (replaces sqlite PRAGMA usage).
-    """
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT
-              current_database() AS db,
-              inet_server_addr() AS server_addr,
-              inet_server_port() AS server_port;
-            """
-        )
-        info = cur.fetchone()
-        conn.close()
-
-        return jsonify(
-            {
-                "cwd": os.getcwd(),
-                "database": info,
-                "has_database_url": bool(os.environ.get("DATABASE_URL")),
-                "pgsslmode": os.environ.get("PGSSLMODE", "require"),
-            }
-        )
-    except Exception as e:
-        logger.exception("debug_db_path failed")
-        return jsonify({"error": str(e)}), 500
-
-
-@misc_bp.route("/api/labeled-emails-count", methods=["GET"])
-def labeled_emails_count():
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) AS count FROM labeled_emails;")
+    cur.execute("SELECT google_user_id, email, updated_at FROM google_accounts WHERE google_user_id = %s", (uid,))
     row = cur.fetchone()
     conn.close()
-    count = row["count"] if row else 0
-    return jsonify({"count": count, "status": "Fetched labeled emails"})
+
+    return jsonify({"found": bool(row), "row": dict(row) if row else None})
 
 
-@misc_bp.route("/learn-from-user-labels", methods=["POST"])
-def learn_from_user_labels():
+@misc_bp.route("/debug/gmail-profile", methods=["GET"])
+def debug_gmail_profile():
+    """
+    Confirms we can build a Gmail service and call users.getProfile.
+    """
     try:
         service = get_gmail_service_for_current_user()
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 401
+        profile = service.users().getProfile(userId="me").execute()
+        return jsonify({"ok": True, "profile": profile})
     except Exception as e:
-        logger.exception("Gmail auth failed in learn_from_user_labels")
-        return jsonify({"error": f"Gmail auth failed: {e}"}), 500
+        logger.exception("debug_gmail_profile failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
 
-    conn = get_db_connection()
-    cur = conn.cursor()
 
-    cur.execute("SELECT gmail_id FROM labeled_emails;")
-    existing_ids = {row["gmail_id"] for row in cur.fetchall()}
+@misc_bp.route("/debug/list-messages", methods=["GET"])
+def debug_list_messages():
+    """
+    Lists first N messages for sanity check.
+    """
+    try:
+        n = int(request.args.get("n", "5"))
+    except Exception:
+        n = 5
 
-    user_id = "me"
-    label_list_resp = service.users().labels().list(userId=user_id).execute()
-    labels = label_list_resp.get("labels", [])
+    try:
+        service = get_gmail_service_for_current_user()
+        resp = service.users().messages().list(userId="me", maxResults=n).execute()
+        return jsonify({"ok": True, "response": resp})
+    except Exception as e:
+        logger.exception("debug_list_messages failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
 
-    user_label_ids = [lbl["id"] for lbl in labels if lbl.get("type") == "user"]
 
-    user_labeled_added = 0
+@misc_bp.route("/debug/list-labels", methods=["GET"])
+def debug_list_labels():
+    """
+    Lists labels for sanity check.
+    """
+    try:
+        service = get_gmail_service_for_current_user()
+        resp = service.users().labels().list(userId="me").execute()
+        return jsonify({"ok": True, "response": resp})
+    except Exception as e:
+        logger.exception("debug_list_labels failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
 
-    from gmail_client import extract_email_fields
-    from db import record_labeled_email
 
-    for lid in user_label_ids:
-        try:
-            msg_list = (
-                service.users()
-                .messages()
-                .list(userId=user_id, labelIds=[lid], maxResults=50)
-                .execute()
-            )
-        except Exception:
-            logger.exception("Error listing messages for label %s", lid)
-            continue
-
-        for m in msg_list.get("messages", []):
-            gmail_id = m["id"]
-            if gmail_id in existing_ids:
-                continue
-
-            try:
-                full = (
-                    service.users()
-                    .messages()
-                    .get(userId=user_id, id=gmail_id, format="full")
-                    .execute()
-                )
-            except Exception:
-                logger.exception("Error fetching full message in learn_from_user_labels")
-                continue
-
-            sender, subject, snippet, body = extract_email_fields(full)
-            thread_id = full.get("threadId", "")
-
-            lbl_name = None
-            for lbl in labels:
-                if lbl["id"] == lid:
-                    lbl_name = lbl.get("name", "")
-                    break
-            if not lbl_name:
-                continue
-
-            record_labeled_email(
-                gmail_id,
-                thread_id,
-                sender,
-                subject,
-                snippet,
-                lbl_name,
-                is_ai_labeled=False,
-                source="user",
-            )
-            existing_ids.add(gmail_id)
-            user_labeled_added += 1
-
-    # Domain → rule creation
-    cur.execute(
-        """
-        SELECT sender, applied_label
-        FROM labeled_emails
-        WHERE source = 'user';
-        """
-    )
-    rows = cur.fetchall()
-
-    domain_counts = {}
-    for row in rows:
-        sender = row["sender"]
-        label = row["applied_label"]
-        domain = extract_domain_from_sender(sender)
-        if not domain:
-            continue
-        key = (label, domain)
-        domain_counts[key] = domain_counts.get(key, 0) + 1
-
-    DOMAIN_THRESHOLD = 3
-    rules_created = 0
-
-    for (label, domain), cnt in domain_counts.items():
-        if cnt < DOMAIN_THRESHOLD:
-            continue
-
-        cur.execute(
-            """
-            SELECT 1 FROM rules
-            WHERE label_name = %s
-              AND from_contains = %s
-              AND is_active = TRUE
-            LIMIT 1;
-            """,
-            (label, f"@{domain}"),
-        )
-        exists = cur.fetchone()
-        if exists:
-            continue
-
-        now = datetime.utcnow().isoformat(timespec="seconds")
-        cur.execute(
-            """
-            INSERT INTO rules
-            (label_name, from_contains, subject_contains, body_contains,
-             is_active, mark_as_read, created_at, updated_at)
-            VALUES (%s, %s, '', '', TRUE, FALSE, %s, %s);
-            """,
-            (label, f"@{domain}", now, now),
-        )
-        rules_created += 1
-
-    conn.commit()
-    conn.close()
-
-    logger.info(
-        "learn_from_user_labels finished: user_labeled_added=%d rules_created=%d",
-        user_labeled_added,
-        rules_created,
-    )
-
+@misc_bp.route("/debug/extract-domain", methods=["GET"])
+def debug_extract_domain():
+    """
+    Quick check for domain extraction behavior.
+    """
+    sender = request.args.get("sender", "")
     return jsonify(
         {
-            "status": "ok",
-            "user_labeled_added": user_labeled_added,
-            "rules_created": rules_created,
+            "sender": sender,
+            "domain": extract_domain_from_sender(sender),
         }
     )
+
+
+@misc_bp.route("/debug/now", methods=["GET"])
+def debug_now():
+    return jsonify({"utc_now": datetime.utcnow().isoformat(timespec="seconds") + "Z"})
