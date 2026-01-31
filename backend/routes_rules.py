@@ -502,11 +502,12 @@ def run_labeler():
                 "remove_from_inbox_on_label": REMOVE_FROM_INBOX_ON_LABEL,
                 "archive_rule_labeled_env": ARCHIVE_RULE_LABELED,
                 "archive_ai_labeled_env": ARCHIVE_AI_LABELED,
+                "source_category_filter": "CATEGORY_PERSONAL",
             },
         )
 
-    # Only include UNREAD when PROCESS_UNREAD_ONLY=true
-    label_ids = ["INBOX"]
+    # ✅ Restrict source to Inbox + Primary (CATEGORY_PERSONAL)
+    label_ids = ["INBOX", "CATEGORY_PERSONAL"]
     if PROCESS_UNREAD_ONLY:
         label_ids.append("UNREAD")
 
