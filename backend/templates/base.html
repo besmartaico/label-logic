@@ -13,17 +13,12 @@
 
 <nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4">
   <div class="container-fluid">
-    <a class="navbar-brand" href="/dashboard">Label Logic</a>
+    <a class="navbar-brand" href="#">Label Logic</a>
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navMain">
       <span class="navbar-toggler-icon"></span>
     </button>
     <div class="collapse navbar-collapse" id="navMain">
       <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-        <li class="nav-item">
-          <a class="nav-link {% if request.path.startswith('/dashboard') or request.path == '/' %}active{% endif %}" href="/dashboard">
-            Dashboard
-          </a>
-        </li>
         <li class="nav-item">
           <a class="nav-link {% if request.path.startswith('/rules') %}active{% endif %}" href="/rules">
             Rules

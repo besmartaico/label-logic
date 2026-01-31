@@ -97,17 +97,88 @@ async function loadRules() {
   });
 }
 
+async function loadLabels() {
+  const tbody = document.getElementById("labels-table-body");
+  const status = document.getElementById("labels-status");
+  tbody.innerHTML = `<tr><td colspan="4" class="text-muted">Loading…</td></tr>`;
+  status.textContent = "";
+
+  const labels = await fetchJSON("/api/labels");
+
+  if (!labels.length) {
+    tbody.innerHTML = `<tr><td colspan="4" class="text-muted">No labels returned.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = labels
+    .map((l) => {
+      return `
+        <tr>
+          <td>${escapeHtml(l.name)}</td>
+          <td class="text-end">${l.messagesUnread ?? 0}</td>
+          <td class="text-end">${l.messagesTotal ?? 0}</td>
+          <td class="text-end">
+            <button class="btn btn-sm btn-outline-secondary" data-markread="${escapeHtml(
+              l.id
+            )}">Mark Read</button>
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  tbody.querySelectorAll("[data-markread]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.getAttribute("data-markread");
+      if (!confirm("Mark all unread messages in this label as read?")) return;
+
+      status.textContent = "Marking read…";
+      try {
+        const data = await fetchJSON(`/api/labels/${id}/mark-read`, { method: "POST" });
+        status.textContent = data.message || "Done.";
+        await loadLabels();
+      } catch (e) {
+        status.textContent = `Error: ${e.message}`;
+      }
+    });
+  });
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
-  // Initial load (rules only)
+  // Initial loads
   try {
     await loadRules();
   } catch (e) {
     console.error(e);
   }
+  try {
+    await loadLabels();
+  } catch (e) {
+    console.error(e);
+  }
 
-  // Refresh rules
+  // Refresh buttons
   const refreshRulesBtn = document.getElementById("refresh-rules-btn");
   if (refreshRulesBtn) refreshRulesBtn.addEventListener("click", loadRules);
+
+  const refreshLabelsBtn = document.getElementById("refresh-labels-btn");
+  if (refreshLabelsBtn) refreshLabelsBtn.addEventListener("click", loadLabels);
+
+  // Init default labels
+  const initBtn = document.getElementById("init-default-labels-btn");
+  if (initBtn) {
+    initBtn.addEventListener("click", async () => {
+      const status = document.getElementById("init-labels-status");
+      status.textContent = "Initializing default labels…";
+      try {
+        const data = await fetchJSON("/init-default-labels", { method: "POST" });
+        status.textContent = `Ensured ${data.count} labels.`;
+        await loadLabels();
+      } catch (e) {
+        status.textContent = `Error: ${e.message}`;
+      }
+    });
+  }
 
   // Learn rules
   const learnBtn = document.getElementById("learn-rules-btn");
@@ -125,6 +196,29 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     });
   }
+
+  // Run labeler
+  document.getElementById("run-labeler-btn").addEventListener("click", async () => {
+    const status = document.getElementById("run-labeler-status");
+    const logLink = document.getElementById("download-run-log-link");
+    status.textContent = "Running labeler…";
+
+    try {
+      const res = await fetch("/run-labeler", { method: "POST" });
+      if (!res.ok) {
+        status.textContent = `Error: ${res.status}`;
+        return;
+      }
+      const data = await res.json();
+      status.textContent = `Done. Processed=${data.processed}, Rule=${data.rule_labeled}, AI=${data.ai_labeled}`;
+      if (logLink && data.log_download_url) {
+        logLink.href = data.log_download_url;
+        logLink.style.display = "inline";
+      }
+    } catch (e) {
+      status.textContent = `Error: ${e}`;
+    }
+  });
 
   // Create/update rule
   document.getElementById("rule-form").addEventListener("submit", async (e) => {
