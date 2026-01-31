@@ -56,6 +56,14 @@ try:
 except ValueError:
     MAX_EMAILS_PER_RUN = 50
 
+# NEW: Restrict processing to Primary tab only (Gmail CATEGORY_PERSONAL)
+PROCESS_PRIMARY_ONLY = os.environ.get("PROCESS_PRIMARY_ONLY", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
 # Sender-email learning config
 LL_LABEL_PREFIX = os.environ.get("LL_LABEL_PREFIX", "@LL-")
 try:
@@ -479,17 +487,23 @@ def run_labeler():
                 "ts": _utc_ts(),
                 "event": "run_start",
                 "max_emails_per_run": MAX_EMAILS_PER_RUN,
+                "process_primary_only": PROCESS_PRIMARY_ONLY,
                 "remove_from_inbox_on_label": REMOVE_FROM_INBOX_ON_LABEL,
                 "archive_rule_labeled_env": ARCHIVE_RULE_LABELED,
                 "archive_ai_labeled_env": ARCHIVE_AI_LABELED,
             },
         )
 
+    # ✅ CHANGE: restrict to Primary tab by requiring CATEGORY_PERSONAL
+    label_filter = ["INBOX"]
+    if PROCESS_PRIMARY_ONLY:
+        label_filter.append("CATEGORY_PERSONAL")
+
     try:
         msg_list = (
             service.users()
             .messages()
-            .list(userId="me", labelIds=["INBOX"], maxResults=MAX_EMAILS_PER_RUN)
+            .list(userId="me", labelIds=label_filter, maxResults=MAX_EMAILS_PER_RUN)
             .execute()
         )
         messages = msg_list.get("messages", [])
@@ -515,7 +529,7 @@ def run_labeler():
         sender, subject, snippet, body = extract_email_fields(full)
         thread_id = full.get("threadId", "")
 
-        # NEW: capture state BEFORE we modify labels
+        # Capture state BEFORE we modify labels
         pre_label_ids = full.get("labelIds", []) or []
         pre_categories = _extract_gmail_categories(pre_label_ids)
         received_at = _human_received_at(full)
