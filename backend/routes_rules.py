@@ -56,8 +56,16 @@ try:
 except ValueError:
     MAX_EMAILS_PER_RUN = 50
 
-# NEW: Restrict processing to Primary tab only (Gmail CATEGORY_PERSONAL)
+# Restrict processing to Primary tab only (Gmail CATEGORY_PERSONAL)
 PROCESS_PRIMARY_ONLY = os.environ.get("PROCESS_PRIMARY_ONLY", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
+# ✅ NEW: only process UNREAD messages
+PROCESS_UNREAD_ONLY = os.environ.get("PROCESS_UNREAD_ONLY", "true").lower() in (
     "1",
     "true",
     "yes",
@@ -130,7 +138,6 @@ def _human_received_at(full_message: dict) -> str:
     else:
         dt_local = dt_utc
 
-    # Example: 2026-01-30 21:15:03 MST
     return dt_local.strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
@@ -165,12 +172,6 @@ def load_all_rules():
 
 
 def email_matches_rule(sender, subject, body, rule):
-    """
-    OR logic:
-      - if any of from/subject/body contains matches, rule matches.
-      - if a field is blank, it doesn't participate.
-      - if all are blank => no match (avoid labeling everything).
-    """
     from_contains = (rule.get("from_contains") or "").strip().lower()
     subject_contains = (rule.get("subject_contains") or "").strip().lower()
     body_contains = (rule.get("body_contains") or "").strip().lower()
@@ -321,7 +322,6 @@ def api_gmail_labels():
 
 @rules_bp.route("/api/labels", methods=["GET"])
 def api_get_labels():
-    # REQUIRED by frontend rules.js
     try:
         service = get_gmail_service_for_current_user()
     except RuntimeError as e:
@@ -366,7 +366,6 @@ def api_get_labels():
 
 @rules_bp.route("/api/labels/<label_id>/mark-read", methods=["POST"])
 def api_mark_label_read(label_id):
-    # REQUIRED by frontend rules.js
     try:
         service = get_gmail_service_for_current_user()
     except RuntimeError as e:
@@ -404,9 +403,7 @@ def api_mark_label_read(label_id):
         return jsonify({"error": "Gmail list failed"}), 500
 
     if not all_ids:
-        return jsonify(
-            {"status": "ok", "updated": 0, "message": "No unread messages in this label."}
-        )
+        return jsonify({"status": "ok", "updated": 0, "message": "No unread messages in this label."})
 
     CHUNK_SIZE = 1000
     try:
@@ -420,18 +417,11 @@ def api_mark_label_read(label_id):
         logger.exception("Gmail batchModify failed when marking label read")
         return jsonify({"error": "Gmail batchModify failed"}), 500
 
-    return jsonify(
-        {
-            "status": "ok",
-            "updated": len(all_ids),
-            "message": f"Marked {len(all_ids)} messages as read.",
-        }
-    )
+    return jsonify({"status": "ok", "updated": len(all_ids), "message": f"Marked {len(all_ids)} messages as read."})
 
 
 @rules_bp.route("/download-run-log", methods=["GET"])
 def download_run_log():
-    """Download the most recent run log. The file is overwritten each run."""
     path = _run_log_path()
     if not os.path.exists(path):
         return jsonify({"error": "No run log available yet."}), 404
@@ -453,7 +443,6 @@ def run_labeler():
         logger.exception("Gmail auth failed in run_labeler")
         return jsonify({"error": f"Gmail auth failed: {e}"}), 500
 
-    # Learn sender-email rules from ANY @LL-* labels (latest wins)
     sender_sync_summary = {"status": "skipped", "created_or_updated": 0}
     try:
         sender_sync_summary = sync_sender_email_rules_from_ll_labels(
@@ -466,19 +455,26 @@ def run_labeler():
     except Exception:
         logger.exception("Sender-email rule sync failed; continuing with existing rules/AI.")
 
-    # Reload rules AFTER learning, so new sender rules apply immediately in this run
     rules = load_active_rules()
     rule_count = 0
     ai_count = 0
     total = 0
 
-    # Write a fresh run log (single file overwritten each run)
     log_path = _run_log_path()
     try:
         fp = open(log_path, "w", encoding="utf-8")
     except Exception:
         fp = None
         logger.exception("Failed to open run log at %s", log_path)
+
+    # ✅ Build Gmail label filter
+    # Primary-only: INBOX + CATEGORY_PERSONAL
+    # Unread-only: add UNREAD
+    label_filter = ["INBOX"]
+    if PROCESS_PRIMARY_ONLY:
+        label_filter.append("CATEGORY_PERSONAL")
+    if PROCESS_UNREAD_ONLY:
+        label_filter.append("UNREAD")
 
     if fp:
         _log_line(
@@ -488,16 +484,13 @@ def run_labeler():
                 "event": "run_start",
                 "max_emails_per_run": MAX_EMAILS_PER_RUN,
                 "process_primary_only": PROCESS_PRIMARY_ONLY,
+                "process_unread_only": PROCESS_UNREAD_ONLY,
+                "gmail_label_filter": label_filter,
                 "remove_from_inbox_on_label": REMOVE_FROM_INBOX_ON_LABEL,
                 "archive_rule_labeled_env": ARCHIVE_RULE_LABELED,
                 "archive_ai_labeled_env": ARCHIVE_AI_LABELED,
             },
         )
-
-    # ✅ CHANGE: restrict to Primary tab by requiring CATEGORY_PERSONAL
-    label_filter = ["INBOX"]
-    if PROCESS_PRIMARY_ONLY:
-        label_filter.append("CATEGORY_PERSONAL")
 
     try:
         msg_list = (
@@ -529,7 +522,6 @@ def run_labeler():
         sender, subject, snippet, body = extract_email_fields(full)
         thread_id = full.get("threadId", "")
 
-        # Capture state BEFORE we modify labels
         pre_label_ids = full.get("labelIds", []) or []
         pre_categories = _extract_gmail_categories(pre_label_ids)
         received_at = _human_received_at(full)
@@ -584,6 +576,7 @@ def run_labeler():
                 break
 
         if not matched_label:
+            # NOTE: this is still one AI request per email (we’ll batch next step)
             label, conf = ai_suggest_label(sender, subject, body)
             if label:
                 apply_label_to_message(
@@ -671,7 +664,6 @@ def init_default_labels():
         return jsonify({"error": f"Gmail auth failed: {e}"}), 500
 
     ensured = []
-
     for name in DEFAULT_LL_LABELS:
         label_id = get_or_create_gmail_label(service, name)
         if label_id:
