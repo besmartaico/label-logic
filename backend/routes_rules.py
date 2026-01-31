@@ -1,10 +1,9 @@
 import os
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from flask import Blueprint, render_template, jsonify, request, send_file
-from jinja2 import TemplateNotFound
 from googleapiclient.errors import HttpError
 
 from db import get_db_connection, record_labeled_email, record_ai_suggestion
@@ -51,7 +50,25 @@ try:
 except ValueError:
     MAX_EMAILS_PER_RUN = 50
 
-# If true, only process UNREAD Inbox messages in /run-labeler
+# -------------------------------------------------------------------
+# Source filtering for /run-labeler
+# -------------------------------------------------------------------
+# Default to CATEGORY_PERSONAL (Primary tab)
+SOURCE_CATEGORY_LABEL = (
+    os.environ.get("SOURCE_CATEGORY_LABEL", "CATEGORY_PERSONAL").strip() or "CATEGORY_PERSONAL"
+)
+
+# If true, also require the message to still be in INBOX.
+# NOTE: Gmail "Category" unread counts can include messages that are no longer in INBOX.
+# Keeping INBOX in the filter can dramatically reduce the number of messages returned.
+PROCESS_INBOX_ONLY = os.environ.get("PROCESS_INBOX_ONLY", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
+# If true, only process UNREAD messages in /run-labeler
 PROCESS_UNREAD_ONLY = os.environ.get("PROCESS_UNREAD_ONLY", "true").lower() in (
     "1",
     "true",
@@ -92,6 +109,60 @@ def _log_line(fp, obj: dict):
 
 def _utc_ts() -> str:
     return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+
+def _ms_epoch_to_iso(ms: str | int | None) -> str | None:
+    """
+    Gmail internalDate is milliseconds since epoch (string).
+    Return ISO 8601 (UTC) like 2026-01-31T01:22:00Z.
+    """
+    if ms is None:
+        return None
+    try:
+        ms_int = int(ms)
+        dt = datetime.fromtimestamp(ms_int / 1000, tz=timezone.utc)
+        return dt.isoformat().replace("+00:00", "Z")
+    except Exception:
+        return None
+
+
+def _derive_mailbox_and_category(label_ids: list[str]) -> dict:
+    """
+    "Mailbox" here means high-level placement and category signals we can infer.
+    - in_inbox: bool
+    - category: Primary/Promotions/Social/Updates/Forums (best-effort)
+    - raw_category_labels: list of CATEGORY_* labels
+    """
+    s = set(label_ids or [])
+
+    in_inbox = "INBOX" in s
+
+    # Category labels Gmail may apply
+    category_map = {
+        "CATEGORY_PERSONAL": "Primary",
+        "CATEGORY_PROMOTIONS": "Promotions",
+        "CATEGORY_SOCIAL": "Social",
+        "CATEGORY_UPDATES": "Updates",
+        "CATEGORY_FORUMS": "Forums",
+    }
+    raw_category_labels = [lid for lid in s if lid.startswith("CATEGORY_")]
+
+    # Prefer explicit category labels
+    category = None
+    for lid, name in category_map.items():
+        if lid in s:
+            category = name
+            break
+
+    # If it's in inbox but we can't see a category label, call it "Inbox (uncategorized)"
+    if in_inbox and not category:
+        category = "Inbox (uncategorized)"
+
+    return {
+        "in_inbox": in_inbox,
+        "category": category,
+        "raw_category_labels": sorted(raw_category_labels),
+    }
 
 
 def db_row_to_rule(row):
@@ -154,20 +225,7 @@ def email_matches_rule(sender, subject, body, rule):
 
 @rules_bp.route("/", methods=["GET"])
 def index():
-    # Backwards compatible: if you have dashboard.html use it, else fall back to index.html
-    try:
-        return render_template("dashboard.html")
-    except TemplateNotFound:
-        return render_template("index.html")
-
-
-@rules_bp.route("/dashboard", methods=["GET"])
-def dashboard_page():
-    # Endpoint name intentionally matches routes_misc redirect: rules.dashboard_page
-    try:
-        return render_template("dashboard.html")
-    except TemplateNotFound:
-        return render_template("index.html")
+    return render_template("index.html")
 
 
 @rules_bp.route("/rules", methods=["GET"])
@@ -261,10 +319,10 @@ def api_update_rule(rule_id):
 def api_delete_rule(rule_id):
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("DELETE FROM rules WHERE id = %s", (rule_id,))
+    cur.execute("DELETE FROM rules WHERE id = %s;", (rule_id,))
     conn.commit()
     conn.close()
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "deleted"})
 
 
 @rules_bp.route("/api/gmail-labels", methods=["GET"])
@@ -375,9 +433,7 @@ def api_mark_label_read(label_id):
         return jsonify({"error": "Gmail list failed"}), 500
 
     if not all_ids:
-        return jsonify(
-            {"status": "ok", "updated": 0, "message": "No unread messages in this label."}
-        )
+        return jsonify({"status": "ok", "updated": 0, "message": "No unread messages in this label."})
 
     CHUNK_SIZE = 1000
     try:
@@ -443,6 +499,7 @@ def run_labeler():
     ai_count = 0
     total = 0
 
+    # Write a fresh run log (single file overwritten each run)
     log_path = _run_log_path()
     try:
         fp = open(log_path, "w", encoding="utf-8")
@@ -458,15 +515,21 @@ def run_labeler():
                 "event": "run_start",
                 "max_emails_per_run": MAX_EMAILS_PER_RUN,
                 "process_unread_only_env": PROCESS_UNREAD_ONLY,
+                "process_inbox_only_env": PROCESS_INBOX_ONLY,
+                "source_category_label_env": SOURCE_CATEGORY_LABEL,
                 "remove_from_inbox_on_label": REMOVE_FROM_INBOX_ON_LABEL,
                 "archive_rule_labeled_env": ARCHIVE_RULE_LABELED,
                 "archive_ai_labeled_env": ARCHIVE_AI_LABELED,
-                "source_category_filter": "CATEGORY_PERSONAL",
             },
         )
 
-    # Restrict to Primary (CATEGORY_PERSONAL); optionally UNREAD
-    label_ids = ["INBOX", "CATEGORY_PERSONAL"]
+    # Build Gmail label filter.
+    # IMPORTANT: Gmail API labelIds behave like an AND filter.
+    # So labelIds=["INBOX","CATEGORY_PERSONAL","UNREAD"] means the message must have ALL 3.
+    # To process *all* CATEGORY_PERSONAL unread (even if not currently in INBOX), leave out INBOX.
+    label_ids = [SOURCE_CATEGORY_LABEL]
+    if PROCESS_INBOX_ONLY:
+        label_ids.append("INBOX")
     if PROCESS_UNREAD_ONLY:
         label_ids.append("UNREAD")
 
@@ -497,6 +560,7 @@ def run_labeler():
         gmail_id = m["id"]
         total += 1
 
+        # Pull message metadata + content
         try:
             full = (
                 service.users()
@@ -508,9 +572,12 @@ def run_labeler():
             logger.exception("Error fetching full message in run_labeler")
             continue
 
+        # BEFORE any action: capture labelIds, read/unread, category, received date
         before_label_ids = full.get("labelIds", []) or []
         before_is_unread = "UNREAD" in set(before_label_ids)
+        mailbox_info = _derive_mailbox_and_category(before_label_ids)
         received_internal_ms = full.get("internalDate")
+        received_iso_utc = _ms_epoch_to_iso(received_internal_ms)
 
         sender, subject, snippet, body = extract_email_fields(full)
         thread_id = full.get("threadId", "")
@@ -526,7 +593,11 @@ def run_labeler():
                     "sender": sender,
                     "subject": subject,
                     "received_internalDate_ms": received_internal_ms,
+                    "received_utc": received_iso_utc,
                     "is_unread_before": before_is_unread,
+                    "in_inbox_before": mailbox_info["in_inbox"],
+                    "category_before": mailbox_info["category"],
+                    "raw_category_labels_before": mailbox_info["raw_category_labels"],
                     "label_ids_before": sorted(before_label_ids),
                 },
             )
@@ -635,6 +706,13 @@ def run_labeler():
         )
         fp.close()
 
+    logger.info(
+        "run_labeler finished: processed=%d rule_labeled=%d ai_labeled=%d",
+        total,
+        rule_count,
+        ai_count,
+    )
+
     return jsonify(
         {
             "status": "ok",
@@ -658,6 +736,7 @@ def init_default_labels():
         return jsonify({"error": f"Gmail auth failed: {e}"}), 500
 
     ensured = []
+
     for name in DEFAULT_LL_LABELS:
         label_id = get_or_create_gmail_label(service, name)
         if label_id:
