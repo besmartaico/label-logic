@@ -3,7 +3,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from flask import Blueprint, render_template, jsonify, request, send_file
+from flask import Blueprint, render_template, jsonify, request, send_file, redirect, url_for
 from googleapiclient.errors import HttpError
 
 from db import get_db_connection, record_labeled_email, record_ai_suggestion
@@ -131,13 +131,9 @@ def _derive_mailbox_and_category(label_ids: list[str]) -> dict:
     "Mailbox" here means high-level placement and category signals we can infer.
     - in_inbox: bool
     - category: Primary/Promotions/Social/Updates/Forums (best-effort)
-    - raw_category_labels: list of CATEGORY_* labels
     """
-    s = set(label_ids or [])
+    in_inbox = "INBOX" in label_ids
 
-    in_inbox = "INBOX" in s
-
-    # Category labels Gmail may apply
     category_map = {
         "CATEGORY_PERSONAL": "Primary",
         "CATEGORY_PROMOTIONS": "Promotions",
@@ -145,87 +141,323 @@ def _derive_mailbox_and_category(label_ids: list[str]) -> dict:
         "CATEGORY_UPDATES": "Updates",
         "CATEGORY_FORUMS": "Forums",
     }
-    raw_category_labels = [lid for lid in s if lid.startswith("CATEGORY_")]
-
-    # Prefer explicit category labels
     category = None
-    for lid, name in category_map.items():
-        if lid in s:
-            category = name
+    for k, v in category_map.items():
+        if k in label_ids:
+            category = v
             break
 
-    # If it's in inbox but we can't see a category label, call it "Inbox (uncategorized)"
-    if in_inbox and not category:
-        category = "Inbox (uncategorized)"
+    return {"in_inbox": in_inbox, "category": category}
 
-    return {
-        "in_inbox": in_inbox,
-        "category": category,
-        "raw_category_labels": sorted(raw_category_labels),
+
+def _is_free_email_domain(domain: str) -> bool:
+    free_domains = {
+        "gmail.com",
+        "googlemail.com",
+        "yahoo.com",
+        "outlook.com",
+        "hotmail.com",
+        "live.com",
+        "icloud.com",
+        "me.com",
+        "aol.com",
+        "protonmail.com",
+        "pm.me",
+        "mail.com",
+        "gmx.com",
     }
+    return domain.lower().strip() in free_domains
 
 
-def db_row_to_rule(row):
-    return {
-        "id": row["id"],
-        "label_name": row["label_name"],
-        "from_contains": row.get("from_contains") or "",
-        "subject_contains": row.get("subject_contains") or "",
-        "body_contains": row.get("body_contains") or "",
-        "is_active": bool(row.get("is_active")),
-        "mark_as_read": bool(row.get("mark_as_read")),
-    }
+def _normalize_sender_email(sender_email: str) -> str:
+    return (sender_email or "").strip().lower()
 
 
-def load_active_rules():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM rules WHERE is_active = TRUE ORDER BY id ASC;")
-    rows = cur.fetchall()
-    conn.close()
-    return [db_row_to_rule(r) for r in rows]
+def _sender_domain(sender_email: str) -> str:
+    sender_email = _normalize_sender_email(sender_email)
+    if "@" not in sender_email:
+        return ""
+    return sender_email.split("@", 1)[1]
 
 
-def load_all_rules():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM rules ORDER BY id ASC;")
-    rows = cur.fetchall()
-    conn.close()
-    return [db_row_to_rule(r) for r in rows]
-
-
-def email_matches_rule(sender, subject, body, rule):
-    """
-    OR logic:
-      - if any of from/subject/body contains matches, rule matches.
-      - if a field is blank, it doesn't participate.
-      - if all are blank => no match (avoid labeling everything).
-    """
-    from_contains = (rule.get("from_contains") or "").strip().lower()
-    subject_contains = (rule.get("subject_contains") or "").strip().lower()
-    body_contains = (rule.get("body_contains") or "").strip().lower()
-
-    if not from_contains and not subject_contains and not body_contains:
-        return False
-
-    sender_l = (sender or "").lower()
-    subject_l = (subject or "").lower()
-    body_l = (body or "").lower()
-
-    if from_contains and from_contains in sender_l:
+def _should_skip_sender_for_learning(sender_email: str) -> bool:
+    if not sender_email:
         return True
-    if subject_contains and subject_contains in subject_l:
+    dom = _sender_domain(sender_email)
+    if not dom:
         return True
-    if body_contains and body_contains in body_l:
+    if SENDER_RULES_SKIP_FREE_DOMAINS and _is_free_email_domain(dom):
         return True
-
     return False
 
 
+def _safe_str(x):
+    if x is None:
+        return ""
+    return str(x)
+
+
+def _bool_param(name: str, default: bool = False) -> bool:
+    raw = request.args.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on", "y")
+
+
+def _int_param(name: str, default: int) -> int:
+    raw = request.args.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except Exception:
+        return default
+
+
+def _json_body():
+    try:
+        return request.get_json(force=True, silent=True) or {}
+    except Exception:
+        return {}
+
+
+def _gmail_query_for_run_labeler() -> str:
+    """
+    Build the Gmail search query for /run-labeler based on env configuration.
+    Default uses CATEGORY_PERSONAL and unread only.
+    """
+    parts = []
+
+    # Category
+    if SOURCE_CATEGORY_LABEL:
+        parts.append(f"label:{SOURCE_CATEGORY_LABEL}")
+
+    # Only inbox?
+    if PROCESS_INBOX_ONLY:
+        parts.append("in:inbox")
+
+    # Only unread?
+    if PROCESS_UNREAD_ONLY:
+        parts.append("is:unread")
+
+    return " ".join(parts).strip()
+
+
+def _remove_inbox_label_if_enabled(service, msg_id: str):
+    if not REMOVE_FROM_INBOX_ON_LABEL:
+        return
+    try:
+        service.users().messages().modify(
+            userId="me",
+            id=msg_id,
+            body={"removeLabelIds": ["INBOX"]},
+        ).execute()
+    except Exception:
+        logger.exception("Failed to remove INBOX label from message %s", msg_id)
+
+
+def _archive_if_enabled(service, msg_id: str, is_ai: bool):
+    """
+    Archive means remove INBOX label. (Gmail doesn't have a separate archive label.)
+    """
+    if is_ai and not ARCHIVE_AI_LABELED:
+        return
+    if (not is_ai) and not ARCHIVE_RULE_LABELED:
+        return
+    try:
+        service.users().messages().modify(
+            userId="me",
+            id=msg_id,
+            body={"removeLabelIds": ["INBOX"]},
+        ).execute()
+    except Exception:
+        logger.exception("Failed to archive (remove INBOX) message %s", msg_id)
+
+
+def _label_message_flow(service, msg_id: str, label_name: str, is_ai: bool, from_address: str, subject: str):
+    """
+    Apply a label, record in DB, and do configured inbox removal/archiving.
+    """
+    label_id = get_or_create_gmail_label(service, label_name)
+    apply_label_to_message(service, msg_id, label_id)
+
+    # Record the labeled email in DB
+    try:
+        record_labeled_email(
+            message_id=msg_id,
+            label_applied=label_name,
+            source="ai" if is_ai else "rule",
+            from_address=from_address,
+            subject=subject,
+        )
+    except Exception:
+        logger.exception("Failed to record labeled email %s", msg_id)
+
+    # Remove from inbox behavior
+    _remove_inbox_label_if_enabled(service, msg_id)
+
+    # Archive behavior (also removes from inbox)
+    _archive_if_enabled(service, msg_id, is_ai=is_ai)
+
+
+def _get_messages(service, query: str, max_results: int):
+    """
+    Return list of message stubs with id/threadId.
+    """
+    resp = service.users().messages().list(userId="me", q=query, maxResults=max_results).execute()
+    return resp.get("messages", []) or []
+
+
+def _get_message_full(service, msg_id: str):
+    """
+    Fetch full message.
+    """
+    return service.users().messages().get(userId="me", id=msg_id, format="full").execute()
+
+
+def _extract_fields(msg):
+    """
+    Extract common fields from a Gmail message using helper.
+    """
+    try:
+        return extract_email_fields(msg)
+    except Exception:
+        logger.exception("Failed to extract email fields")
+        return {
+            "from_address": "",
+            "to_address": "",
+            "subject": "",
+            "snippet": "",
+            "date": "",
+            "body_text": "",
+            "label_ids": msg.get("labelIds", []) if isinstance(msg, dict) else [],
+        }
+
+
+def _apply_sender_rule_if_any(service, msg_id: str, from_address: str, subject: str):
+    """
+    Apply a learned sender-email rule if present (stored in DB).
+    """
+    sender = _normalize_sender_email(from_address)
+    if not sender:
+        return None
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT label_name
+            FROM sender_email_rules
+            WHERE sender_email = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (sender,),
+        )
+        row = cur.fetchone()
+        conn.close()
+    except Exception:
+        logger.exception("Failed to query sender_email_rules")
+        return None
+
+    if not row:
+        return None
+
+    label_name = row["label_name"] if isinstance(row, dict) or hasattr(row, "__getitem__") else row[0]
+    if not label_name:
+        return None
+
+    try:
+        _label_message_flow(
+            service=service,
+            msg_id=msg_id,
+            label_name=label_name,
+            is_ai=False,
+            from_address=from_address,
+            subject=subject,
+        )
+        return label_name
+    except Exception:
+        logger.exception("Failed to apply sender rule label to message %s", msg_id)
+        return None
+
+
+def _is_valid_email_label(label_name: str) -> bool:
+    """
+    Only allow labels that are in the allowed LL label set (or default list).
+    """
+    allowed = get_allowed_ai_labels()
+    return label_name in allowed
+
+
+def _maybe_ai_suggest_label(from_address: str, subject: str, snippet: str, body_text: str):
+    """
+    Ask the AI to suggest a label. Returns label name or None.
+    """
+    try:
+        allowed = get_allowed_ai_labels()
+        suggestion = ai_suggest_label(
+            from_address=from_address,
+            subject=subject,
+            snippet=snippet,
+            body_text=body_text,
+            allowed_labels=allowed,
+        )
+        if not suggestion:
+            return None
+        suggestion = suggestion.strip()
+        if suggestion not in allowed:
+            return None
+        return suggestion
+    except Exception:
+        logger.exception("AI label suggestion failed")
+        return None
+
+
+def _record_ai_suggestion(msg_id: str, from_address: str, subject: str, suggested_label: str):
+    try:
+        record_ai_suggestion(
+            message_id=msg_id,
+            from_address=from_address,
+            subject=subject,
+            suggested_label=suggested_label,
+        )
+    except Exception:
+        logger.exception("Failed to record AI suggestion for message %s", msg_id)
+
+
+def _is_gmail_http_error(e: Exception) -> bool:
+    return isinstance(e, HttpError)
+
+
+def _http_error_status(e: HttpError) -> int | None:
+    try:
+        return int(getattr(e.resp, "status", None))
+    except Exception:
+        return None
+
+
+def _json_error(msg: str, status: int = 400, extra: dict | None = None):
+    data = {"error": msg}
+    if extra:
+        data.update(extra)
+    return jsonify(data), status
+
+
+# -----------------------------
+# Pages
+# -----------------------------
+
 @rules_bp.route("/", methods=["GET"])
 def index():
-    return render_template("index.html")
+    # App home
+    return redirect(url_for("rules.dashboard_page"))
+
+
+@rules_bp.route("/dashboard", methods=["GET"])
+def dashboard_page():
+    return render_template("dashboard.html")
 
 
 @rules_bp.route("/rules", methods=["GET"])
@@ -233,523 +465,339 @@ def rules_page():
     return render_template("rules.html")
 
 
+@rules_bp.route("/ai-labels", methods=["GET"])
+def ai_labels_page():
+    return render_template("ai_labels.html")
+
+
 @rules_bp.route("/relabel", methods=["GET"])
 def relabel_page():
     return render_template("relabel.html")
 
 
-@rules_bp.route("/api/allowed-ai-labels", methods=["GET"])
-def api_allowed_ai_labels():
-    return jsonify({"allowed_ai_labels": get_allowed_ai_labels()})
+# -----------------------------
+# API: labels and rules
+# -----------------------------
+
+@rules_bp.route("/api/ll-labels", methods=["GET"])
+def api_ll_labels():
+    labels = get_allowed_ai_labels()
+    return jsonify({"labels": labels})
 
 
-@rules_bp.route("/api/rules", methods=["GET"])
-def api_get_rules():
-    rules = load_all_rules()
-    return jsonify(rules)
+@rules_bp.route("/api/default-ll-labels", methods=["GET"])
+def api_default_ll_labels():
+    return jsonify({"labels": DEFAULT_LL_LABELS})
 
 
-@rules_bp.route("/api/rules", methods=["POST"])
-def api_create_rule():
-    data = request.get_json(force=True, silent=True) or {}
-
-    label_name = (data.get("label_name") or "").strip()
-    from_contains = (data.get("from_contains") or "").strip()
-    subject_contains = (data.get("subject_contains") or "").strip()
-    body_contains = (data.get("body_contains") or "").strip()
-    is_active = bool(data.get("is_active", True))
-    mark_as_read = bool(data.get("mark_as_read", False))
-
-    if not label_name:
-        return jsonify({"error": "label_name is required"}), 400
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO rules (label_name, from_contains, subject_contains, body_contains, is_active, mark_as_read)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        RETURNING id;
-        """,
-        (label_name, from_contains, subject_contains, body_contains, is_active, mark_as_read),
-    )
-    new_id = cur.fetchone()["id"]
-    conn.commit()
-    conn.close()
-
-    return jsonify({"status": "ok", "id": new_id})
-
-
-@rules_bp.route("/api/rules/<int:rule_id>", methods=["PUT"])
-def api_update_rule(rule_id):
-    data = request.get_json(force=True, silent=True) or {}
-
-    label_name = (data.get("label_name") or "").strip()
-    from_contains = (data.get("from_contains") or "").strip()
-    subject_contains = (data.get("subject_contains") or "").strip()
-    body_contains = (data.get("body_contains") or "").strip()
-    is_active = bool(data.get("is_active", True))
-    mark_as_read = bool(data.get("mark_as_read", False))
-
-    if not label_name:
-        return jsonify({"error": "label_name is required"}), 400
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        UPDATE rules
-        SET label_name = %s,
-            from_contains = %s,
-            subject_contains = %s,
-            body_contains = %s,
-            is_active = %s,
-            mark_as_read = %s
-        WHERE id = %s
-        """,
-        (label_name, from_contains, subject_contains, body_contains, is_active, mark_as_read, rule_id),
-    )
-    conn.commit()
-    conn.close()
-
-    return jsonify({"status": "ok"})
-
-
-@rules_bp.route("/api/rules/<int:rule_id>", methods=["DELETE"])
-def api_delete_rule(rule_id):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM rules WHERE id = %s;", (rule_id,))
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "deleted"})
-
-
-@rules_bp.route("/api/gmail-labels", methods=["GET"])
-def api_gmail_labels():
+@rules_bp.route("/api/sync-sender-rules", methods=["POST"])
+def api_sync_sender_rules():
+    """
+    Sync sender_email_rules based on existing labeled emails in DB.
+    (Keeps sender rules aligned with @LL labels in the mailbox.)
+    """
     try:
-        service = get_gmail_service_for_current_user()
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 401
-    except Exception as e:
-        logger.exception("Gmail auth failed when fetching Gmail labels")
-        return jsonify({"error": f"Gmail auth failed: {e}"}), 500
-
-    try:
-        resp = service.users().labels().list(userId="me").execute()
-        labels = resp.get("labels", [])
-    except HttpError as e:
-        logger.exception("Gmail labels list failed")
-        return jsonify({"error": f"Gmail labels list failed: {e}"}), 500
-
-    user_labels = [
-        {"id": lbl["id"], "name": lbl.get("name", "")}
-        for lbl in labels
-        if lbl.get("type") == "user"
-    ]
-    return jsonify(user_labels)
-
-
-@rules_bp.route("/api/labels", methods=["GET"])
-def api_labels():
-    try:
-        service = get_gmail_service_for_current_user()
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 401
-    except Exception as e:
-        logger.exception("Gmail auth failed when fetching labels")
-        return jsonify({"error": f"Gmail auth failed: {e}"}), 500
-
-    try:
-        resp = service.users().labels().list(userId="me").execute()
-        labels = resp.get("labels", [])
-    except HttpError as e:
-        logger.exception("Gmail labels list failed")
-        return jsonify({"error": f"Gmail labels list failed: {e}"}), 500
-
-    excluded_ids = {"CHAT", "SENT", "TRASH", "DRAFT", "SPAM", "STARRED"}
-
-    enriched = []
-    for lbl in labels:
-        try:
-            detail = service.users().labels().get(userId="me", id=lbl["id"]).execute()
-        except HttpError:
-            logger.exception("Error fetching label detail for %s", lbl.get("name"))
-            continue
-
-        lid = detail.get("id", "")
-        if lid in excluded_ids:
-            continue
-
-        enriched.append(
-            {
-                "id": detail["id"],
-                "name": detail.get("name", ""),
-                "type": detail.get("type", ""),
-                "messagesUnread": detail.get("messagesUnread", 0),
-                "messagesTotal": detail.get("messagesTotal", 0),
-            }
-        )
-
-    return jsonify(enriched)
-
-
-@rules_bp.route("/api/labels/<label_id>/mark-read", methods=["POST"])
-def api_mark_label_read(label_id):
-    try:
-        service = get_gmail_service_for_current_user()
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 401
-    except Exception as e:
-        logger.exception("Gmail auth failed when marking label read")
-        return jsonify({"error": f"Gmail auth failed: {e}"}), 500
-
-    user_id = "me"
-    all_ids = []
-    page_token = None
-
-    try:
-        while True:
-            resp = (
-                service.users()
-                .messages()
-                .list(
-                    userId=user_id,
-                    labelIds=[label_id, "UNREAD"],
-                    pageToken=page_token,
-                    maxResults=500,
-                )
-                .execute()
-            )
-
-            messages = resp.get("messages", [])
-            all_ids.extend(m["id"] for m in messages)
-
-            page_token = resp.get("nextPageToken")
-            if not page_token:
-                break
-    except HttpError:
-        logger.exception("Gmail list failed when marking label read")
-        return jsonify({"error": "Gmail list failed"}), 500
-
-    if not all_ids:
-        return jsonify({"status": "ok", "updated": 0, "message": "No unread messages in this label."})
-
-    CHUNK_SIZE = 1000
-    try:
-        for i in range(0, len(all_ids), CHUNK_SIZE):
-            chunk = all_ids[i : i + CHUNK_SIZE]
-            service.users().messages().batchModify(
-                userId=user_id,
-                body={"ids": chunk, "removeLabelIds": ["UNREAD"]},
-            ).execute()
-    except HttpError:
-        logger.exception("Gmail batchModify failed when marking label read")
-        return jsonify({"error": "Gmail batchModify failed"}), 500
-
-    return jsonify(
-        {
-            "status": "ok",
-            "updated": len(all_ids),
-            "message": f"Marked {len(all_ids)} messages as read.",
-        }
-    )
-
-
-@rules_bp.route("/download-run-log", methods=["GET"])
-def download_run_log():
-    """Download the most recent run log. The file is overwritten each run."""
-    path = _run_log_path()
-    if not os.path.exists(path):
-        return jsonify({"error": "No run log available yet."}), 404
-    return send_file(
-        path,
-        as_attachment=True,
-        download_name="label_logic_last_run.jsonl",
-        mimetype="application/json",
-    )
-
-
-@rules_bp.route("/run-labeler", methods=["POST"])
-def run_labeler():
-    try:
-        service = get_gmail_service_for_current_user()
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 401
-    except Exception as e:
-        logger.exception("Gmail auth failed in run_labeler")
-        return jsonify({"error": f"Gmail auth failed: {e}"}), 500
-
-    # Step 0: Learn sender-email rules from ANY @LL-* labels (latest wins)
-    sender_sync_summary = {"status": "skipped", "created_or_updated": 0}
-    try:
-        sender_sync_summary = sync_sender_email_rules_from_ll_labels(
-            service,
+        result = sync_sender_email_rules_from_ll_labels(
             label_prefix=LL_LABEL_PREFIX,
             max_per_label=SENDER_RULES_MAX_PER_LABEL,
-            skip_free_email_domains=SENDER_RULES_SKIP_FREE_DOMAINS,
+            skip_free_domains=SENDER_RULES_SKIP_FREE_DOMAINS,
         )
-        logger.info("Sender-email rule sync summary: %s", sender_sync_summary)
-    except Exception:
-        logger.exception("Sender-email rule sync failed; continuing with existing rules/AI.")
+        return jsonify({"ok": True, "result": result})
+    except Exception as e:
+        logger.exception("sync_sender_email_rules failed")
+        return _json_error("Failed to sync sender rules", 500, {"message": str(e)})
 
-    # Reload rules AFTER learning, so new sender rules apply immediately in this run
-    rules = load_active_rules()
-    rule_count = 0
-    ai_count = 0
-    total = 0
 
-    # Write a fresh run log (single file overwritten each run)
+@rules_bp.route("/api/learn-rules", methods=["POST"])
+def api_learn_rules():
+    """
+    Learn sender-email rules from the labeled emails log.
+    """
+    try:
+        result = learn_rules_from_labeled_emails(
+            label_prefix=LL_LABEL_PREFIX,
+            max_per_label=SENDER_RULES_MAX_PER_LABEL,
+            skip_free_domains=SENDER_RULES_SKIP_FREE_DOMAINS,
+        )
+        return jsonify({"ok": True, "result": result})
+    except Exception as e:
+        logger.exception("learn_rules_from_labeled_emails failed")
+        return _json_error("Failed to learn rules", 500, {"message": str(e)})
+
+
+@rules_bp.route("/api/run-labeler", methods=["POST"])
+def run_labeler():
+    """
+    Main labeler endpoint:
+    - Fetch messages from configured source (category/inbox/unread)
+    - Apply sender rules if available
+    - Otherwise ask AI for a suggestion (optional)
+    - Apply labels and record logs
+    """
+    body = _json_body()
+    max_emails = int(body.get("max_emails") or MAX_EMAILS_PER_RUN)
+
+    query_override = body.get("query")
+    query = (query_override or _gmail_query_for_run_labeler()).strip()
+
+    # Allow caller to override unread-only/inbox-only behavior by passing a query
+    if not query:
+        query = _gmail_query_for_run_labeler()
+
+    try:
+        service = get_gmail_service_for_current_user()
+    except Exception as e:
+        logger.exception("Failed to get Gmail service")
+        return _json_error("Not authenticated with Gmail", 401, {"message": str(e)})
+
+    # Prepare run log
     log_path = _run_log_path()
+    run_meta = {
+        "ts": _utc_ts(),
+        "event": "run_start",
+        "query": query,
+        "max_emails": max_emails,
+        "source_category_label": SOURCE_CATEGORY_LABEL,
+        "process_inbox_only": PROCESS_INBOX_ONLY,
+        "process_unread_only": PROCESS_UNREAD_ONLY,
+    }
     try:
-        fp = open(log_path, "w", encoding="utf-8")
+        with open(log_path, "w", encoding="utf-8") as fp:
+            _log_line(fp, run_meta)
     except Exception:
-        fp = None
-        logger.exception("Failed to open run log at %s", log_path)
+        logger.exception("Failed to open run log file %s", log_path)
 
-    if fp:
-        _log_line(
-            fp,
-            {
-                "ts": _utc_ts(),
-                "event": "run_start",
-                "max_emails_per_run": MAX_EMAILS_PER_RUN,
-                "process_unread_only_env": PROCESS_UNREAD_ONLY,
-                "process_inbox_only_env": PROCESS_INBOX_ONLY,
-                "source_category_label_env": SOURCE_CATEGORY_LABEL,
-                "remove_from_inbox_on_label": REMOVE_FROM_INBOX_ON_LABEL,
-                "archive_rule_labeled_env": ARCHIVE_RULE_LABELED,
-                "archive_ai_labeled_env": ARCHIVE_AI_LABELED,
-            },
-        )
-
-    # Build Gmail label filter.
-    # IMPORTANT: Gmail API labelIds behave like an AND filter.
-    # So labelIds=["INBOX","CATEGORY_PERSONAL","UNREAD"] means the message must have ALL 3.
-    # To process *all* CATEGORY_PERSONAL unread (even if not currently in INBOX), leave out INBOX.
-    label_ids = [SOURCE_CATEGORY_LABEL]
-    if PROCESS_INBOX_ONLY:
-        label_ids.append("INBOX")
-    if PROCESS_UNREAD_ONLY:
-        label_ids.append("UNREAD")
+    processed = 0
+    labeled = 0
+    ai_suggested = 0
+    errors = 0
 
     try:
-        msg_list = (
-            service.users()
-            .messages()
-            .list(userId="me", labelIds=label_ids, maxResults=MAX_EMAILS_PER_RUN)
-            .execute()
-        )
-        messages = msg_list.get("messages", [])
+        msgs = _get_messages(service, query=query, max_results=max_emails)
     except HttpError as e:
-        logger.exception("Gmail list failed in run_labeler")
-        return jsonify({"error": f"Gmail list failed: {e}"}), 500
+        logger.exception("Gmail list failed")
+        status = _http_error_status(e) or 500
+        return _json_error("Gmail API error listing messages", status, {"message": str(e)})
 
-    if fp:
-        _log_line(
-            fp,
-            {
-                "ts": _utc_ts(),
-                "event": "fetched_messages",
-                "count": len(messages),
-                "label_filter": label_ids,
-            },
-        )
-
-    for m in messages:
-        gmail_id = m["id"]
-        total += 1
-
-        # Pull message metadata + content
-        try:
-            full = (
-                service.users()
-                .messages()
-                .get(userId="me", id=gmail_id, format="full")
-                .execute()
-            )
-        except HttpError:
-            logger.exception("Error fetching full message in run_labeler")
+    for m in msgs:
+        msg_id = m.get("id")
+        if not msg_id:
             continue
 
-        # BEFORE any action: capture labelIds, read/unread, category, received date
-        before_label_ids = full.get("labelIds", []) or []
-        before_is_unread = "UNREAD" in set(before_label_ids)
-        mailbox_info = _derive_mailbox_and_category(before_label_ids)
-        received_internal_ms = full.get("internalDate")
-        received_iso_utc = _ms_epoch_to_iso(received_internal_ms)
+        processed += 1
 
-        sender, subject, snippet, body = extract_email_fields(full)
-        thread_id = full.get("threadId", "")
+        try:
+            msg = _get_message_full(service, msg_id)
+            fields = _extract_fields(msg)
 
-        if fp:
+            from_address = fields.get("from_address", "")
+            subject = fields.get("subject", "")
+            snippet = fields.get("snippet", "")
+            body_text = fields.get("body_text", "")
+            label_ids = fields.get("label_ids", []) or []
+
+            mailbox = _derive_mailbox_and_category(label_ids)
+
+            # 1) Try sender rule
+            applied_rule_label = _apply_sender_rule_if_any(service, msg_id, from_address, subject)
+            if applied_rule_label:
+                labeled += 1
+                try:
+                    with open(log_path, "a", encoding="utf-8") as fp:
+                        _log_line(
+                            fp,
+                            {
+                                "ts": _utc_ts(),
+                                "event": "labeled_rule",
+                                "message_id": msg_id,
+                                "from_address": from_address,
+                                "subject": subject,
+                                "label": applied_rule_label,
+                                "mailbox": mailbox,
+                                "internal_date": _ms_epoch_to_iso(msg.get("internalDate")),
+                            },
+                        )
+                except Exception:
+                    logger.exception("Failed to append to run log")
+                continue
+
+            # 2) AI suggestion
+            suggested = _maybe_ai_suggest_label(from_address, subject, snippet, body_text)
+            if suggested:
+                ai_suggested += 1
+                _record_ai_suggestion(msg_id, from_address, subject, suggested)
+
+                # Apply AI label immediately (current behavior)
+                _label_message_flow(
+                    service=service,
+                    msg_id=msg_id,
+                    label_name=suggested,
+                    is_ai=True,
+                    from_address=from_address,
+                    subject=subject,
+                )
+                labeled += 1
+
+                try:
+                    with open(log_path, "a", encoding="utf-8") as fp:
+                        _log_line(
+                            fp,
+                            {
+                                "ts": _utc_ts(),
+                                "event": "labeled_ai",
+                                "message_id": msg_id,
+                                "from_address": from_address,
+                                "subject": subject,
+                                "label": suggested,
+                                "mailbox": mailbox,
+                                "internal_date": _ms_epoch_to_iso(msg.get("internalDate")),
+                            },
+                        )
+                except Exception:
+                    logger.exception("Failed to append to run log")
+
+            else:
+                try:
+                    with open(log_path, "a", encoding="utf-8") as fp:
+                        _log_line(
+                            fp,
+                            {
+                                "ts": _utc_ts(),
+                                "event": "no_label",
+                                "message_id": msg_id,
+                                "from_address": from_address,
+                                "subject": subject,
+                                "mailbox": mailbox,
+                                "internal_date": _ms_epoch_to_iso(msg.get("internalDate")),
+                            },
+                        )
+                except Exception:
+                    logger.exception("Failed to append to run log")
+
+        except HttpError as e:
+            errors += 1
+            logger.exception("Gmail API error processing message %s", msg_id)
+            status = _http_error_status(e) or 500
+            try:
+                with open(log_path, "a", encoding="utf-8") as fp:
+                    _log_line(
+                        fp,
+                        {
+                            "ts": _utc_ts(),
+                            "event": "error",
+                            "message_id": msg_id,
+                            "error_type": "HttpError",
+                            "status": status,
+                            "message": str(e),
+                        },
+                    )
+            except Exception:
+                logger.exception("Failed to append error to run log")
+        except Exception as e:
+            errors += 1
+            logger.exception("Unexpected error processing message %s", msg_id)
+            try:
+                with open(log_path, "a", encoding="utf-8") as fp:
+                    _log_line(
+                        fp,
+                        {
+                            "ts": _utc_ts(),
+                            "event": "error",
+                            "message_id": msg_id,
+                            "error_type": type(e).__name__,
+                            "message": str(e),
+                        },
+                    )
+            except Exception:
+                logger.exception("Failed to append error to run log")
+
+    # finalize run log
+    try:
+        with open(log_path, "a", encoding="utf-8") as fp:
             _log_line(
                 fp,
                 {
                     "ts": _utc_ts(),
-                    "event": "email_loaded_before_actions",
-                    "gmail_id": gmail_id,
-                    "thread_id": thread_id,
-                    "sender": sender,
-                    "subject": subject,
-                    "received_internalDate_ms": received_internal_ms,
-                    "received_utc": received_iso_utc,
-                    "is_unread_before": before_is_unread,
-                    "in_inbox_before": mailbox_info["in_inbox"],
-                    "category_before": mailbox_info["category"],
-                    "raw_category_labels_before": mailbox_info["raw_category_labels"],
-                    "label_ids_before": sorted(before_label_ids),
+                    "event": "run_end",
+                    "processed": processed,
+                    "labeled": labeled,
+                    "ai_suggested": ai_suggested,
+                    "errors": errors,
                 },
             )
-
-        matched_label = None
-        matched_rule_mark_read = False
-        matched_rule_id = None
-
-        # RULE PASS
-        for rule in rules:
-            if email_matches_rule(sender, subject, body, rule):
-                matched_label = rule["label_name"]
-                matched_rule_mark_read = rule.get("mark_as_read", False)
-                matched_rule_id = rule.get("id")
-
-                apply_label_to_message(
-                    service,
-                    gmail_id,
-                    matched_label,
-                    remove_from_inbox=REMOVE_FROM_INBOX_ON_LABEL,
-                    mark_as_read=matched_rule_mark_read,
-                )
-
-                record_labeled_email(
-                    gmail_id,
-                    thread_id,
-                    sender,
-                    subject,
-                    snippet,
-                    matched_label,
-                    is_ai_labeled=False,
-                    source="rule",
-                )
-
-                if fp:
-                    _log_line(
-                        fp,
-                        {
-                            "ts": _utc_ts(),
-                            "event": "action_taken",
-                            "gmail_id": gmail_id,
-                            "thread_id": thread_id,
-                            "method": "rule",
-                            "rule_id": matched_rule_id,
-                            "applied_label": matched_label,
-                            "remove_from_inbox": REMOVE_FROM_INBOX_ON_LABEL,
-                            "mark_as_read": bool(matched_rule_mark_read),
-                        },
-                    )
-
-                rule_count += 1
-                break
-
-        # AI PASS
-        if not matched_label:
-            label, conf = ai_suggest_label(sender, subject, body)
-            if label:
-                apply_label_to_message(
-                    service,
-                    gmail_id,
-                    label,
-                    remove_from_inbox=REMOVE_FROM_INBOX_ON_LABEL,
-                    mark_as_read=False,
-                )
-
-                record_labeled_email(
-                    gmail_id,
-                    thread_id,
-                    sender,
-                    subject,
-                    snippet,
-                    label,
-                    is_ai_labeled=True,
-                    source="ai",
-                )
-                record_ai_suggestion(gmail_id, label, conf)
-
-                if fp:
-                    _log_line(
-                        fp,
-                        {
-                            "ts": _utc_ts(),
-                            "event": "action_taken",
-                            "gmail_id": gmail_id,
-                            "thread_id": thread_id,
-                            "method": "ai",
-                            "confidence": conf,
-                            "applied_label": label,
-                            "remove_from_inbox": REMOVE_FROM_INBOX_ON_LABEL,
-                            "mark_as_read": False,
-                        },
-                    )
-
-                ai_count += 1
-
-    if fp:
-        _log_line(
-            fp,
-            {
-                "ts": _utc_ts(),
-                "event": "run_end",
-                "processed": total,
-                "rule_labeled": rule_count,
-                "ai_labeled": ai_count,
-            },
-        )
-        fp.close()
-
-    logger.info(
-        "run_labeler finished: processed=%d rule_labeled=%d ai_labeled=%d",
-        total,
-        rule_count,
-        ai_count,
-    )
+    except Exception:
+        logger.exception("Failed to append run_end to run log")
 
     return jsonify(
         {
-            "status": "ok",
-            "processed": total,
-            "rule_labeled": rule_count,
-            "ai_labeled": ai_count,
-            "sender_rule_sync": sender_sync_summary,
-            "log_download_url": "/download-run-log",
+            "ok": True,
+            "query": query,
+            "processed": processed,
+            "labeled": labeled,
+            "ai_suggested": ai_suggested,
+            "errors": errors,
         }
     )
 
 
-@rules_bp.route("/init-default-labels", methods=["GET", "POST"])
-def init_default_labels():
+@rules_bp.route("/api/download-last-run", methods=["GET"])
+def download_last_run():
+    """
+    Download the last run log file (JSONL).
+    """
+    path = _run_log_path()
+    if not os.path.exists(path):
+        return _json_error("No run log found", 404)
+
+    return send_file(path, as_attachment=True, download_name=RUN_LOG_FILENAME)
+
+
+@rules_bp.route("/api/apply-label", methods=["POST"])
+def api_apply_label():
+    """
+    Apply a label to a Gmail message. Used by UI when user confirms/overrides suggestions.
+    Expects JSON:
+      { "message_id": "...", "label": "..." , "source": "manual"|"ai"|"rule" }
+    """
+    body = _json_body()
+    msg_id = (body.get("message_id") or "").strip()
+    label_name = (body.get("label") or "").strip()
+    source = (body.get("source") or "manual").strip().lower()
+
+    if not msg_id:
+        return _json_error("message_id required", 400)
+    if not label_name:
+        return _json_error("label required", 400)
+    if not _is_valid_email_label(label_name):
+        return _json_error("Invalid label", 400, {"label": label_name})
+
     try:
         service = get_gmail_service_for_current_user()
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 401
     except Exception as e:
-        logger.exception("Gmail auth failed in init_default_labels")
-        return jsonify({"error": f"Gmail auth failed: {e}"}), 500
+        logger.exception("Failed to get Gmail service")
+        return _json_error("Not authenticated with Gmail", 401, {"message": str(e)})
 
-    ensured = []
-
-    for name in DEFAULT_LL_LABELS:
-        label_id = get_or_create_gmail_label(service, name)
-        if label_id:
-            ensured.append({"name": name, "id": label_id})
-
-    return jsonify({"status": "ok", "count": len(ensured), "ensured_labels": ensured})
-
-
-@rules_bp.route("/learn-rules", methods=["POST"])
-def learn_rules():
     try:
-        created = learn_rules_from_labeled_emails()
-        return jsonify({"status": "ok", "created": created})
-    except Exception:
-        logger.exception("learn_rules failed")
-        return jsonify({"error": "learn_rules failed"}), 500
+        msg = _get_message_full(service, msg_id)
+        fields = _extract_fields(msg)
+        from_address = fields.get("from_address", "")
+        subject = fields.get("subject", "")
+
+        _label_message_flow(
+            service=service,
+            msg_id=msg_id,
+            label_name=label_name,
+            is_ai=(source == "ai"),
+            from_address=from_address,
+            subject=subject,
+        )
+
+        return jsonify({"ok": True, "message_id": msg_id, "label": label_name})
+
+    except HttpError as e:
+        logger.exception("Gmail API error applying label")
+        status = _http_error_status(e) or 500
+        return _json_error("Gmail API error applying label", status, {"message": str(e)})
+    except Exception as e:
+        logger.exception("Unexpected error applying label")
+        return _json_error("Unexpected error applying label", 500, {"message": str(e)})

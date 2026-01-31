@@ -5,6 +5,7 @@ import traceback
 from flask import Flask, jsonify, request
 from dotenv import load_dotenv
 from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.exceptions import HTTPException
 from jinja2 import TemplateNotFound
 
 from db import init_db
@@ -58,6 +59,10 @@ def create_app():
 
     @app.errorhandler(Exception)
     def handle_unexpected_exception(e):
+        # Let Flask/Werkzeug handle expected HTTP errors (404, 401, etc.)
+        if isinstance(e, HTTPException):
+            return e
+
         logger.exception("Unhandled exception on %s %s", request.method, request.path)
 
         # Return JSON for API calls or when browser requests JSON
