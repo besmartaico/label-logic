@@ -86,6 +86,32 @@ def _utc_ts() -> str:
     return datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
 
+def _ms_epoch_to_iso(ms: str | None) -> str | None:
+    if not ms:
+        return None
+    try:
+        return datetime.utcfromtimestamp(int(ms) / 1000).isoformat(timespec="seconds") + "Z"
+    except Exception:
+        return None
+
+
+def _derive_mailbox_and_category(label_ids: list[str]) -> dict:
+    s = set(label_ids or [])
+    in_inbox = "INBOX" in s
+
+    # Category labels are system labels like CATEGORY_PERSONAL, CATEGORY_PROMOTIONS, etc.
+    category_labels = sorted([x for x in s if x.startswith("CATEGORY_")])
+
+    # We treat “category” as the first one if any exist
+    category = category_labels[0] if category_labels else None
+
+    return {
+        "in_inbox": in_inbox,
+        "category": category,
+        "raw_category_labels": category_labels,
+    }
+
+
 def db_row_to_rule(row):
     return {
         "id": row["id"],
@@ -146,12 +172,7 @@ def email_matches_rule(sender, subject, body, rule):
 
 @rules_bp.route("/", methods=["GET"])
 def index():
-    return render_template("dashboard.html")
-
-
-@rules_bp.route("/dashboard", methods=["GET"])
-def dashboard_page():
-    return render_template("dashboard.html")
+    return render_template("index.html")
 
 
 @rules_bp.route("/rules", methods=["GET"])
@@ -251,86 +272,16 @@ def api_delete_rule(rule_id):
     return jsonify({"status": "ok"})
 
 
-@rules_bp.route("/api/labels", methods=["GET"])
-def api_labels():
-    service = get_gmail_service_for_current_user()
-
-    # Only show user labels + CATEGORY labels you care about
-    resp = service.users().labels().list(userId="me").execute()
-    labels = resp.get("labels", [])
-
-    # Keep: user labels + CATEGORY_PERSONAL + LABEL_INBOX + CATEGORY_* (optional)
-    keep_ids = {
-        "INBOX",
-        "CATEGORY_PERSONAL",
-        "CATEGORY_PROMOTIONS",
-        "CATEGORY_SOCIAL",
-        "CATEGORY_UPDATES",
-        "CATEGORY_FORUMS",
-    }
-
-    filtered = []
-    for l in labels:
-        lid = l.get("id")
-        ltype = l.get("type")
-        if ltype == "user" or lid in keep_ids:
-            filtered.append(l)
-
-    # Fetch counts for each label
-    out = []
-    for l in filtered:
-        lid = l.get("id")
-        try:
-            meta = service.users().labels().get(userId="me", id=lid).execute()
-        except Exception:
-            meta = l
-        out.append(
-            {
-                "id": lid,
-                "name": meta.get("name") or l.get("name") or lid,
-                "messagesUnread": meta.get("messagesUnread"),
-                "messagesTotal": meta.get("messagesTotal"),
-            }
-        )
-
-    # Sort: inbox + categories first, then user labels alpha
-    def sort_key(x):
-        name = x["name"]
-        lid = x["id"]
-        priority = 2
-        if lid == "INBOX":
-            priority = 0
-        elif lid.startswith("CATEGORY_"):
-            priority = 1
-        return (priority, name.lower())
-
-    out.sort(key=sort_key)
-    return jsonify(out)
-
-
-@rules_bp.route("/api/labels/<label_id>/mark-read", methods=["POST"])
-def api_mark_read(label_id):
-    service = get_gmail_service_for_current_user()
-
-    # Mark all unread in this label as read
-    q = f"label:{label_id} is:unread"
-    resp = service.users().messages().list(userId="me", q=q, maxResults=500).execute()
-    messages = resp.get("messages", []) or []
-    if not messages:
-        return jsonify({"message": "No unread messages found."})
-
-    ids = [m["id"] for m in messages]
-    service.users().messages().batchModify(
-        userId="me",
-        body={"ids": ids, "removeLabelIds": ["UNREAD"]},
-    ).execute()
-
-    return jsonify({"message": f"Marked {len(ids)} messages as read."})
-
-
 @rules_bp.route("/init-default-labels", methods=["POST"])
 def init_default_labels():
-    service = get_gmail_service_for_current_user()
+    try:
+        service = get_gmail_service_for_current_user()
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 401
+    except Exception as e:
+        logger.exception("Gmail auth failed in init_default_labels")
+        return jsonify({"error": f"Gmail auth failed: {e}"}), 500
+
     ensured = 0
     for name in DEFAULT_LL_LABELS:
         get_or_create_gmail_label(service, name)
@@ -341,246 +292,315 @@ def init_default_labels():
 @rules_bp.route("/learn-rules", methods=["POST"])
 def learn_rules():
     created = learn_rules_from_labeled_emails()
-    # optional: also sync sender-email rules based on @LL- labels
-    try:
-        sync_sender_email_rules_from_ll_labels(
-            label_prefix=LL_LABEL_PREFIX,
-            max_per_label=SENDER_RULES_MAX_PER_LABEL,
-            skip_free_domains=SENDER_RULES_SKIP_FREE_DOMAINS,
-        )
-    except Exception:
-        logger.exception("sync_sender_email_rules_from_ll_labels failed (non-fatal)")
     return jsonify({"status": "ok", "created": created})
 
 
 @rules_bp.route("/download-run-log", methods=["GET"])
 def download_run_log():
+    """Download the most recent run log. The file is overwritten each run."""
     path = _run_log_path()
     if not os.path.exists(path):
-        return jsonify({"error": "No run log found yet."}), 404
-    return send_file(path, as_attachment=True, download_name=RUN_LOG_FILENAME)
+        return jsonify({"error": "No run log available yet."}), 404
+    return send_file(
+        path,
+        as_attachment=True,
+        download_name="label_logic_last_run.jsonl",
+        mimetype="application/json",
+    )
 
 
 @rules_bp.route("/run-labeler", methods=["POST"])
 def run_labeler():
-    """
-    Runs the labeler once:
-    - Pulls messages from Gmail that are eligible
-    - Applies rule-based labels first
-    - Then AI labels
-    - Logs each decision/action to a JSONL run log
-    """
-    service = get_gmail_service_for_current_user()
+    try:
+        service = get_gmail_service_for_current_user()
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 401
+    except Exception as e:
+        logger.exception("Gmail auth failed in run_labeler")
+        return jsonify({"error": f"Gmail auth failed: {e}"}), 500
 
-    # Only look in Category Personal
+    # ✅ NEW STEP 0: Learn sender-email rules from ANY @LL-* labels (latest wins)
+    sender_sync_summary = {"status": "skipped", "created_or_updated": 0}
+    try:
+        sender_sync_summary = sync_sender_email_rules_from_ll_labels(
+            service,
+            label_prefix=LL_LABEL_PREFIX,
+            max_per_label=SENDER_RULES_MAX_PER_LABEL,
+            skip_free_email_domains=SENDER_RULES_SKIP_FREE_DOMAINS,  # default false per your request
+        )
+        logger.info("Sender-email rule sync summary: %s", sender_sync_summary)
+    except Exception:
+        logger.exception("Sender-email rule sync failed; continuing with existing rules/AI.")
+
+    # Reload rules AFTER learning, so new sender rules apply immediately in this run
+    rules = load_active_rules()
+    rule_count = 0
+    ai_count = 0
+    total = 0
+
+    # Write a fresh run log (single file overwritten each run)
+    log_path = _run_log_path()
+    try:
+        fp = open(log_path, "w", encoding="utf-8")
+    except Exception:
+        fp = None
+
+    def log(event: str, payload: dict):
+        if not fp:
+            return
+        _log_line(
+            fp,
+            {
+                "ts": _utc_ts(),
+                "event": event,
+                **payload,
+            },
+        )
+
+    # Only look in CATEGORY_PERSONAL per your request
     gmail_query = "category:personal"
 
-    rules = load_active_rules()
+    log(
+        "run_started",
+        {
+            "query": gmail_query,
+            "max_emails": MAX_EMAILS_PER_RUN,
+            "sender_sync_summary": sender_sync_summary,
+            "rules_loaded": len(rules),
+        },
+    )
 
-    processed = 0
-    rule_labeled = 0
-    ai_labeled = 0
+    try:
+        resp = (
+            service.users()
+            .messages()
+            .list(userId="me", q=gmail_query, maxResults=MAX_EMAILS_PER_RUN)
+            .execute()
+        )
+    except HttpError:
+        logger.exception("Gmail list failed in run_labeler")
+        if fp:
+            fp.close()
+        return jsonify({"error": "Gmail list failed"}), 500
 
-    log_path = _run_log_path()
-    with open(log_path, "w", encoding="utf-8") as fp:
-        _log_line(fp, {"type": "run_start", "ts": _utc_ts(), "query": gmail_query, "max": MAX_EMAILS_PER_RUN})
+    messages = resp.get("messages", []) or []
+
+    for msg in messages:
+        gmail_id = msg.get("id")
+        if not gmail_id:
+            continue
+
+        total += 1
 
         try:
-            resp = service.users().messages().list(userId="me", q=gmail_query, maxResults=MAX_EMAILS_PER_RUN).execute()
-            messages = resp.get("messages", []) or []
-        except HttpError as e:
-            _log_line(fp, {"type": "error", "ts": _utc_ts(), "error": str(e)})
-            return jsonify({"error": str(e)}), 500
-
-        for m in messages:
-            msg_id = m.get("id")
-            if not msg_id:
-                continue
-
-            processed += 1
-
-            try:
-                full = service.users().messages().get(userId="me", id=msg_id, format="full").execute()
-            except HttpError as e:
-                _log_line(fp, {"type": "message_error", "ts": _utc_ts(), "id": msg_id, "error": str(e)})
-                continue
-
-            # Extract fields
-            sender, subject, body_text, snippet, thread_id, internal_date = extract_email_fields(full)
-
-            # Pre-action metadata
-            label_ids = set((full.get("labelIds") or []))
-            is_unread = "UNREAD" in label_ids
-            received_ms = full.get("internalDate")
-            received_iso = None
-            try:
-                if received_ms:
-                    received_iso = datetime.utcfromtimestamp(int(received_ms) / 1000).isoformat(timespec="seconds") + "Z"
-            except Exception:
-                received_iso = None
-
-            # Determine "box" / category-ish labels present
-            category_labels = [lid for lid in label_ids if lid.startswith("CATEGORY_")]
-            system_boxes = []
-            if "INBOX" in label_ids:
-                system_boxes.append("INBOX")
-            if "SPAM" in label_ids:
-                system_boxes.append("SPAM")
-            if "TRASH" in label_ids:
-                system_boxes.append("TRASH")
-            if "IMPORTANT" in label_ids:
-                system_boxes.append("IMPORTANT")
-
-            _log_line(
-                fp,
-                {
-                    "type": "message_seen",
-                    "ts": _utc_ts(),
-                    "id": msg_id,
-                    "thread_id": thread_id,
-                    "from": sender,
-                    "subject": subject,
-                    "snippet": snippet,
-                    "received": received_iso,
-                    "unread_before": is_unread,
-                    "boxes": system_boxes,
-                    "categories": category_labels,
-                    "labelIds": sorted(list(label_ids)),
-                },
+            full = (
+                service.users()
+                .messages()
+                .get(userId="me", id=gmail_id, format="full")
+                .execute()
             )
+        except HttpError:
+            logger.exception("Error fetching full message in run_labeler")
+            continue
 
-            # 1) RULE LABELING
-            matched_rule = None
-            for r in rules:
-                if email_matches_rule(sender, subject, body_text, r):
-                    matched_rule = r
-                    break
+        # BEFORE any action: capture labelIds, read/unread, category, received date
+        before_label_ids = full.get("labelIds", []) or []
+        before_is_unread = "UNREAD" in set(before_label_ids)
+        mailbox_info = _derive_mailbox_and_category(before_label_ids)
+        received_internal_ms = full.get("internalDate")
+        received_iso_utc = _ms_epoch_to_iso(received_internal_ms)
 
-            if matched_rule:
-                label_name = matched_rule["label_name"]
-                mark_as_read = bool(matched_rule.get("mark_as_read"))
+        fields = extract_email_fields(full)
+        # Support both legacy (4-tuple) and newer (6-tuple) extract_email_fields signatures
+        if isinstance(fields, (list, tuple)) and len(fields) == 4:
+            sender, subject, snippet, body = fields
+            thread_id = full.get("threadId", "")
+            internal_date = full.get("internalDate")
+        elif isinstance(fields, (list, tuple)) and len(fields) == 6:
+            sender, subject, body, snippet, thread_id, internal_date = fields
+        else:
+            raise ValueError(
+                f"Unexpected extract_email_fields return value: {type(fields)} len={len(fields) if hasattr(fields, '__len__') else 'n/a'}"
+            )
+        thread_id = full.get("threadId", "")
 
+        log(
+            "email_loaded_before_actions",
+            {
+                "gmail_id": gmail_id,
+                "thread_id": thread_id,
+                "sender": sender,
+                "subject": subject,
+                "received_internalDate_ms": received_internal_ms,
+                "received_utc": received_iso_utc,
+                "is_unread_before": before_is_unread,
+                "in_inbox_before": mailbox_info["in_inbox"],
+                "category_before": mailbox_info["category"],
+                "raw_category_labels_before": mailbox_info["raw_category_labels"],
+                "label_ids_before": sorted(before_label_ids),
+            },
+        )
+
+        # Apply rule-based labels first
+        applied_by_rule = False
+        for rule in rules:
+            if email_matches_rule(sender, subject, body, rule):
+                label_name = rule["label_name"]
                 try:
                     label_id = get_or_create_gmail_label(service, label_name)
 
                     add_label_ids = [label_id]
                     remove_label_ids = []
-                    if mark_as_read:
-                        remove_label_ids.append("UNREAD")
                     if REMOVE_FROM_INBOX_ON_LABEL:
                         remove_label_ids.append("INBOX")
+                    if rule.get("mark_as_read"):
+                        remove_label_ids.append("UNREAD")
 
                     apply_label_to_message(
                         service,
-                        msg_id,
+                        gmail_id,
                         add_label_ids=add_label_ids,
                         remove_label_ids=remove_label_ids,
                     )
 
                     record_labeled_email(
-                        message_id=msg_id,
+                        gmail_id=gmail_id,
                         thread_id=thread_id,
-                        source="rule",
-                        applied_label=label_name,
+                        label=label_name,
+                        method="rule",
                         sender=sender,
                         subject=subject,
-                        snippet=snippet,
                     )
 
-                    rule_labeled += 1
-                    _log_line(
-                        fp,
+                    rule_count += 1
+                    applied_by_rule = True
+
+                    log(
+                        "rule_applied",
                         {
-                            "type": "rule_labeled",
-                            "ts": _utc_ts(),
-                            "id": msg_id,
-                            "label_name": label_name,
-                            "mark_as_read": mark_as_read,
-                            "remove_from_inbox": REMOVE_FROM_INBOX_ON_LABEL,
+                            "gmail_id": gmail_id,
+                            "thread_id": thread_id,
+                            "label": label_name,
+                            "mark_as_read": bool(rule.get("mark_as_read")),
+                            "remove_from_inbox": bool(REMOVE_FROM_INBOX_ON_LABEL),
                         },
                     )
 
-                except Exception as e:
-                    _log_line(fp, {"type": "rule_label_error", "ts": _utc_ts(), "id": msg_id, "error": str(e)})
-                continue
+                    if ARCHIVE_RULE_LABELED:
+                        # optional: archive means remove INBOX
+                        try:
+                            apply_label_to_message(
+                                service,
+                                gmail_id,
+                                add_label_ids=[],
+                                remove_label_ids=["INBOX"],
+                            )
+                            log(
+                                "rule_archived",
+                                {"gmail_id": gmail_id, "thread_id": thread_id, "archived": True},
+                            )
+                        except Exception:
+                            logger.exception("Archiving failed (rule)")
 
-            # 2) AI LABELING
-            try:
-                allowed = get_allowed_ai_labels()
-                suggestion = ai_suggest_label(sender, subject, snippet, allowed_labels=allowed)
-            except Exception as e:
-                _log_line(fp, {"type": "ai_error", "ts": _utc_ts(), "id": msg_id, "error": str(e)})
-                continue
+                except Exception:
+                    logger.exception("Rule apply failed")
+                    log(
+                        "rule_apply_failed",
+                        {"gmail_id": gmail_id, "thread_id": thread_id, "label": label_name},
+                    )
 
-            if not suggestion:
-                _log_line(fp, {"type": "ai_no_suggestion", "ts": _utc_ts(), "id": msg_id})
-                continue
+                break
 
-            try:
-                label_id = get_or_create_gmail_label(service, suggestion)
+        if applied_by_rule:
+            continue
 
-                add_label_ids = [label_id]
-                remove_label_ids = []
-                if ARCHIVE_AI_LABELED or REMOVE_FROM_INBOX_ON_LABEL:
-                    remove_label_ids.append("INBOX")
+        # AI suggestion if no rule matched
+        try:
+            allowed_labels = get_allowed_ai_labels()
+            suggested_label = ai_suggest_label(sender, subject, snippet, allowed_labels=allowed_labels)
+        except Exception:
+            logger.exception("AI suggest failed")
+            log("ai_suggest_failed", {"gmail_id": gmail_id, "thread_id": thread_id})
+            continue
 
-                apply_label_to_message(
-                    service,
-                    msg_id,
-                    add_label_ids=add_label_ids,
-                    remove_label_ids=remove_label_ids,
-                )
+        if not suggested_label:
+            log("ai_no_suggestion", {"gmail_id": gmail_id, "thread_id": thread_id})
+            continue
 
-                record_ai_suggestion(
-                    message_id=msg_id,
-                    thread_id=thread_id,
-                    suggested_label=suggestion,
-                    sender=sender,
-                    subject=subject,
-                    snippet=snippet,
-                )
-                record_labeled_email(
-                    message_id=msg_id,
-                    thread_id=thread_id,
-                    source="ai",
-                    applied_label=suggestion,
-                    sender=sender,
-                    subject=subject,
-                    snippet=snippet,
-                )
+        try:
+            label_id = get_or_create_gmail_label(service, suggested_label)
 
-                ai_labeled += 1
-                _log_line(
-                    fp,
-                    {
-                        "type": "ai_labeled",
-                        "ts": _utc_ts(),
-                        "id": msg_id,
-                        "label_name": suggestion,
-                        "archived": bool(ARCHIVE_AI_LABELED or REMOVE_FROM_INBOX_ON_LABEL),
-                    },
-                )
+            add_label_ids = [label_id]
+            remove_label_ids = []
+            if REMOVE_FROM_INBOX_ON_LABEL:
+                remove_label_ids.append("INBOX")
 
-            except Exception as e:
-                _log_line(fp, {"type": "ai_label_error", "ts": _utc_ts(), "id": msg_id, "error": str(e)})
+            apply_label_to_message(
+                service,
+                gmail_id,
+                add_label_ids=add_label_ids,
+                remove_label_ids=remove_label_ids,
+            )
 
-        _log_line(
-            fp,
-            {
-                "type": "run_end",
-                "ts": _utc_ts(),
-                "processed": processed,
-                "rule_labeled": rule_labeled,
-                "ai_labeled": ai_labeled,
-            },
-        )
+            record_ai_suggestion(
+                gmail_id=gmail_id,
+                thread_id=thread_id,
+                label=suggested_label,
+                sender=sender,
+                subject=subject,
+                snippet=snippet,
+            )
+            record_labeled_email(
+                gmail_id=gmail_id,
+                thread_id=thread_id,
+                label=suggested_label,
+                method="ai",
+                sender=sender,
+                subject=subject,
+            )
+
+            ai_count += 1
+            log(
+                "ai_applied",
+                {"gmail_id": gmail_id, "thread_id": thread_id, "label": suggested_label},
+            )
+
+            if ARCHIVE_AI_LABELED:
+                try:
+                    apply_label_to_message(
+                        service,
+                        gmail_id,
+                        add_label_ids=[],
+                        remove_label_ids=["INBOX"],
+                    )
+                    log("ai_archived", {"gmail_id": gmail_id, "thread_id": thread_id, "archived": True})
+                except Exception:
+                    logger.exception("Archiving failed (ai)")
+
+        except Exception:
+            logger.exception("AI apply failed")
+            log("ai_apply_failed", {"gmail_id": gmail_id, "thread_id": thread_id, "label": suggested_label})
+
+    log(
+        "run_finished",
+        {
+            "total_processed": total,
+            "rule_applied": rule_count,
+            "ai_applied": ai_count,
+            "log_path": log_path,
+        },
+    )
+
+    if fp:
+        fp.close()
 
     return jsonify(
         {
             "status": "ok",
-            "processed": processed,
-            "rule_labeled": rule_labeled,
-            "ai_labeled": ai_labeled,
-            "log_download_url": "/download-run-log",
+            "total": total,
+            "rule_applied": rule_count,
+            "ai_applied": ai_count,
+            "sender_sync_summary": sender_sync_summary,
+            "download_log_url": "/download-run-log",
         }
     )
