@@ -59,16 +59,10 @@ def _get_redirect_uri() -> str:
     if forced:
         return forced
 
-    # Build from the request host so we never accidentally redirect to localhost in production.
-    # Example on Railway: https://your-app.up.railway.app/oauth2callback
     return request.url_root.rstrip("/") + url_for("misc.oauth2callback")
 
 
 def _build_flow(state: str | None = None) -> Flow:
-    """
-    Builds a Google OAuth Flow using env-based client config and a redirect URI
-    that matches the current host.
-    """
     client_config = _load_google_client_config()
 
     kwargs = dict(
@@ -86,6 +80,7 @@ def _build_flow(state: str | None = None) -> Flow:
 def index():
     if "google_user_id" not in session:
         return redirect(url_for("misc.auth_google"))
+    # ✅ send authenticated users to the dashboard endpoint
     return redirect(url_for("rules.dashboard_page"))
 
 
@@ -134,21 +129,14 @@ def oauth2callback():
         logger.exception("Failed to build OAuth flow in /oauth2callback")
         return jsonify({"error": str(e)}), 500
 
-    # After ProxyFix (in app.py), request.url should reflect the correct scheme/host.
-    # NOTE: oauthlib may raise a Warning as an exception when the returned token scopes
-    # do not match the requested scopes ("Scope has changed ..."). We handle that here
-    # and return a clear, actionable response instead of a 500.
     try:
         flow.fetch_token(authorization_response=request.url)
     except Exception as e:
         msg = str(e)
         logger.exception("OAuth token fetch failed")
 
-        # Common case: Google did not grant the Gmail scope we requested.
         if "Scope has changed" in msg or "scope" in msg.lower():
-            # Clear state so a retry starts fresh.
             session.pop("state", None)
-
             return (
                 jsonify(
                     {
@@ -156,10 +144,10 @@ def oauth2callback():
                         "details": msg,
                         "requested_scopes": ALL_SCOPES,
                         "next_steps": [
-                            "1) In Google Cloud Console, ensure Gmail API is enabled for this project.",
-                            "2) Ensure your OAuth consent screen is configured; if in Testing, add your Google account as a Test User.",
-                            "3) Confirm the deployed GOOGLE_CREDENTIALS_JSON is the OAuth Client for the same project.",
-                            "4) Delete any previously stored credentials for this user (google_accounts table) and re-auth at /auth/google.",
+                            "1) Ensure Gmail API is enabled for this project.",
+                            "2) Ensure OAuth consent screen is configured; if in Testing, add your account as a Test User.",
+                            "3) Confirm GOOGLE_CREDENTIALS_JSON is for the same project.",
+                            "4) Delete stored credentials for this user and re-auth at /auth/google.",
                         ],
                     }
                 ),
@@ -170,8 +158,6 @@ def oauth2callback():
 
     creds = flow.credentials
 
-    # Double-check that the token actually includes gmail.modify.
-    # (Some auth flows can complete with reduced scopes.)
     granted_scopes = set(getattr(creds, "scopes", []) or [])
     if "https://www.googleapis.com/auth/gmail.modify" not in granted_scopes:
         session.pop("state", None)
@@ -181,11 +167,6 @@ def oauth2callback():
                     "error": "OAuth completed but Gmail modify permission was not granted.",
                     "granted_scopes": sorted(granted_scopes),
                     "requested_scopes": ALL_SCOPES,
-                    "next_steps": [
-                        "Re-run /auth/google and ensure you approve Gmail access on the consent screen.",
-                        "If you do not see a Gmail permission prompt, delete stored credentials for this user and try again.",
-                        "If still missing, verify Gmail API is enabled and your account is allowed (Test Users / publishing status).",
-                    ],
                 }
             ),
             400,
@@ -207,7 +188,6 @@ def oauth2callback():
     if not google_user_id or not email:
         return jsonify({"error": "Missing user info from ID token"}), 400
 
-    # ✅ FIX: Properly indented try/except and return a clear error if save fails
     try:
         save_credentials(google_user_id, email, creds)
         logger.info("Saved credentials for %s (%s)", email, google_user_id)
@@ -219,6 +199,7 @@ def oauth2callback():
     session["email"] = email
 
     logger.info("User logged in: %s (%s)", email, google_user_id)
+    # ✅ send users to dashboard after login
     return redirect(url_for("rules.dashboard_page"))
 
 
@@ -234,9 +215,6 @@ def logout():
 
 @misc_bp.route("/debug/session", methods=["GET"])
 def debug_session():
-    """
-    Confirms whether the browser session contains the expected values after OAuth.
-    """
     return jsonify(
         {
             "google_user_id": session.get("google_user_id"),
@@ -252,10 +230,6 @@ def debug_session():
 
 @misc_bp.route("/debug/creds", methods=["GET"])
 def debug_creds():
-    """
-    Confirms whether we can find stored credentials for the current session user in the DB.
-    NOTE: Credentials are stored in google_accounts (see db.save_credentials / db.load_credentials).
-    """
     uid = session.get("google_user_id")
     if not uid:
         return jsonify({"error": "No google_user_id in session"}), 401
@@ -271,9 +245,6 @@ def debug_creds():
 
 @misc_bp.route("/debug/gmail-profile", methods=["GET"])
 def debug_gmail_profile():
-    """
-    Confirms we can build a Gmail service and call users.getProfile.
-    """
     try:
         service = get_gmail_service_for_current_user()
         profile = service.users().getProfile(userId="me").execute()
@@ -285,9 +256,6 @@ def debug_gmail_profile():
 
 @misc_bp.route("/debug/list-messages", methods=["GET"])
 def debug_list_messages():
-    """
-    Lists first N messages for sanity check.
-    """
     try:
         n = int(request.args.get("n", "5"))
     except Exception:
@@ -304,9 +272,6 @@ def debug_list_messages():
 
 @misc_bp.route("/debug/list-labels", methods=["GET"])
 def debug_list_labels():
-    """
-    Lists labels for sanity check.
-    """
     try:
         service = get_gmail_service_for_current_user()
         resp = service.users().labels().list(userId="me").execute()
@@ -318,9 +283,6 @@ def debug_list_labels():
 
 @misc_bp.route("/debug/extract-domain", methods=["GET"])
 def debug_extract_domain():
-    """
-    Quick check for domain extraction behavior.
-    """
     sender = request.args.get("sender", "")
     return jsonify(
         {
