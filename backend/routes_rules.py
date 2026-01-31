@@ -1,7 +1,13 @@
 import os
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+
+try:
+    # Python 3.9+
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover
+    ZoneInfo = None
 
 from flask import Blueprint, render_template, jsonify, request, send_file
 from googleapiclient.errors import HttpError
@@ -86,6 +92,40 @@ def _utc_ts() -> str:
     return datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
 
+def _extract_gmail_categories(label_ids):
+    """Return Gmail category labels (e.g., CATEGORY_PERSONAL) from a labelIds list."""
+    if not label_ids:
+        return []
+    return sorted([lid for lid in label_ids if isinstance(lid, str) and lid.startswith("CATEGORY_")])
+
+
+def _human_received_at(full_message: dict) -> str:
+    """Convert Gmail internalDate (ms since epoch) to a human-readable local timestamp."""
+    internal_ms = full_message.get("internalDate")
+    if not internal_ms:
+        return ""
+
+    try:
+        ms = int(internal_ms)
+    except Exception:
+        return ""
+
+    dt_utc = datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
+
+    # Prefer the app/user timezone for readability. Default to America/Los_Angeles.
+    tzname = os.environ.get("APP_TIMEZONE", "America/Los_Angeles")
+    if ZoneInfo is not None:
+        try:
+            dt_local = dt_utc.astimezone(ZoneInfo(tzname))
+        except Exception:
+            dt_local = dt_utc
+    else:
+        dt_local = dt_utc
+
+    # Example: 2026-01-30 21:15:03 PST
+    return dt_local.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
 def db_row_to_rule(row):
     return {
         "id": row["id"],
@@ -161,19 +201,19 @@ def relabel_page():
 
 @rules_bp.route("/api/allowed-ai-labels", methods=["GET"])
 def api_allowed_ai_labels():
-    return jsonify({"allowed_ai_labels": get_allowed_ai_labels()})
+    # returns ["@LL-...", ...]
+    return jsonify({"labels": get_allowed_ai_labels()})
 
 
 @rules_bp.route("/api/rules", methods=["GET"])
 def api_get_rules():
     rules = load_all_rules()
-    return jsonify(rules)
+    return jsonify({"rules": rules})
 
 
 @rules_bp.route("/api/rules", methods=["POST"])
 def api_create_rule():
-    data = request.get_json(force=True, silent=True) or {}
-
+    data = request.get_json(force=True) or {}
     label_name = (data.get("label_name") or "").strip()
     from_contains = (data.get("from_contains") or "").strip()
     subject_contains = (data.get("subject_contains") or "").strip()
@@ -203,8 +243,7 @@ def api_create_rule():
 
 @rules_bp.route("/api/rules/<int:rule_id>", methods=["PUT"])
 def api_update_rule(rule_id):
-    data = request.get_json(force=True, silent=True) or {}
-
+    data = request.get_json(force=True) or {}
     label_name = (data.get("label_name") or "").strip()
     from_contains = (data.get("from_contains") or "").strip()
     subject_contains = (data.get("subject_contains") or "").strip()
@@ -220,13 +259,13 @@ def api_update_rule(rule_id):
     cur.execute(
         """
         UPDATE rules
-        SET label_name = %s,
-            from_contains = %s,
-            subject_contains = %s,
-            body_contains = %s,
-            is_active = %s,
-            mark_as_read = %s
-        WHERE id = %s
+           SET label_name=%s,
+               from_contains=%s,
+               subject_contains=%s,
+               body_contains=%s,
+               is_active=%s,
+               mark_as_read=%s
+         WHERE id=%s;
         """,
         (label_name, from_contains, subject_contains, body_contains, is_active, mark_as_read, rule_id),
     )
@@ -240,143 +279,10 @@ def api_update_rule(rule_id):
 def api_delete_rule(rule_id):
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("DELETE FROM rules WHERE id = %s;", (rule_id,))
+    cur.execute("DELETE FROM rules WHERE id=%s;", (rule_id,))
     conn.commit()
     conn.close()
-    return jsonify({"status": "deleted"})
-
-
-@rules_bp.route("/api/gmail-labels", methods=["GET"])
-def api_gmail_labels():
-    try:
-        service = get_gmail_service_for_current_user()
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 401
-    except Exception as e:
-        logger.exception("Gmail auth failed when fetching Gmail labels")
-        return jsonify({"error": f"Gmail auth failed: {e}"}), 500
-
-    try:
-        resp = service.users().labels().list(userId="me").execute()
-        labels = resp.get("labels", [])
-    except HttpError as e:
-        logger.exception("Gmail labels list failed")
-        return jsonify({"error": f"Gmail labels list failed: {e}"}), 500
-
-    user_labels = [
-        {"id": lbl["id"], "name": lbl.get("name", "")}
-        for lbl in labels
-        if lbl.get("type") == "user"
-    ]
-    return jsonify(user_labels)
-
-
-@rules_bp.route("/api/labels", methods=["GET"])
-def api_get_labels():
-    try:
-        service = get_gmail_service_for_current_user()
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 401
-    except Exception as e:
-        logger.exception("Gmail auth failed when fetching labels")
-        return jsonify({"error": f"Gmail auth failed: {e}"}), 500
-
-    try:
-        resp = service.users().labels().list(userId="me").execute()
-        labels = resp.get("labels", [])
-    except HttpError as e:
-        logger.exception("Gmail labels list failed")
-        return jsonify({"error": f"Gmail labels list failed: {e}"}), 500
-
-    excluded_ids = {"CHAT", "SENT", "TRASH", "DRAFT", "SPAM", "STARRED"}
-
-    enriched = []
-    for lbl in labels:
-        try:
-            detail = service.users().labels().get(userId="me", id=lbl["id"]).execute()
-        except HttpError:
-            logger.exception("Error fetching label detail for %s", lbl.get("name"))
-            continue
-
-        lid = detail.get("id", "")
-        if lid in excluded_ids or lid.startswith("CATEGORY_"):
-            continue
-
-        enriched.append(
-            {
-                "id": detail["id"],
-                "name": detail.get("name", ""),
-                "type": detail.get("type", ""),
-                "messagesUnread": detail.get("messagesUnread", 0),
-                "messagesTotal": detail.get("messagesTotal", 0),
-            }
-        )
-
-    return jsonify(enriched)
-
-
-@rules_bp.route("/api/labels/<label_id>/mark-read", methods=["POST"])
-def api_mark_label_read(label_id):
-    try:
-        service = get_gmail_service_for_current_user()
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 401
-    except Exception as e:
-        logger.exception("Gmail auth failed when marking label read")
-        return jsonify({"error": f"Gmail auth failed: {e}"}), 500
-
-    user_id = "me"
-    all_ids = []
-    page_token = None
-
-    try:
-        while True:
-            resp = (
-                service.users()
-                .messages()
-                .list(
-                    userId=user_id,
-                    labelIds=[label_id, "UNREAD"],
-                    pageToken=page_token,
-                    maxResults=500,
-                )
-                .execute()
-            )
-
-            messages = resp.get("messages", [])
-            all_ids.extend(m["id"] for m in messages)
-
-            page_token = resp.get("nextPageToken")
-            if not page_token:
-                break
-    except HttpError:
-        logger.exception("Gmail list failed when marking label read")
-        return jsonify({"error": "Gmail list failed"}), 500
-
-    if not all_ids:
-        return jsonify(
-            {"status": "ok", "updated": 0, "message": "No unread messages in this label."}
-        )
-
-    CHUNK_SIZE = 1000
-    try:
-        for i in range(0, len(all_ids), CHUNK_SIZE):
-            chunk = all_ids[i : i + CHUNK_SIZE]
-            service.users().messages().batchModify(
-                userId=user_id,
-                body={"ids": chunk, "removeLabelIds": ["UNREAD"]},
-            ).execute()
-    except HttpError:
-        logger.exception("Gmail batchModify failed when marking label read")
-        return jsonify({"error": "Gmail batchModify failed"}), 500
-
-    return jsonify(
-        {
-            "status": "ok",
-            "updated": len(all_ids),
-            "message": f"Marked {len(all_ids)} messages as read.",
-        }
-    )
+    return jsonify({"status": "ok"})
 
 
 @rules_bp.route("/download-run-log", methods=["GET"])
@@ -473,6 +379,11 @@ def run_labeler():
         sender, subject, snippet, body = extract_email_fields(full)
         thread_id = full.get("threadId", "")
 
+        # Capture the message's state BEFORE we modify labels
+        pre_label_ids = full.get("labelIds", []) or []
+        pre_categories = _extract_gmail_categories(pre_label_ids)
+        received_at = _human_received_at(full)
+
         matched_label = None
         matched_rule_mark_read = False
 
@@ -505,6 +416,8 @@ def run_labeler():
                             "event": "labeled",
                             "gmail_id": gmail_id,
                             "thread_id": thread_id,
+                            "received_at": received_at,
+                            "pre_categories": pre_categories,
                             "sender": sender,
                             "subject": subject,
                             "label": matched_label,
@@ -545,6 +458,8 @@ def run_labeler():
                             "event": "labeled",
                             "gmail_id": gmail_id,
                             "thread_id": thread_id,
+                            "received_at": received_at,
+                            "pre_categories": pre_categories,
                             "sender": sender,
                             "subject": subject,
                             "label": label,
@@ -601,6 +516,7 @@ def init_default_labels():
     ensured = []
 
     for name in DEFAULT_LL_LABELS:
+        label_id = get_or_create_gmail_label(service, name)
         label_id = get_or_create_gmail_label(service, name)
         if label_id:
             ensured.append({"name": name, "id": label_id})
