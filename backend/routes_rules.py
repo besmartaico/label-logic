@@ -53,14 +53,10 @@ except ValueError:
 # -------------------------------------------------------------------
 # Source filtering for /run-labeler
 # -------------------------------------------------------------------
-# Default to CATEGORY_PERSONAL (Primary tab)
 SOURCE_CATEGORY_LABEL = (
     os.environ.get("SOURCE_CATEGORY_LABEL", "CATEGORY_PERSONAL").strip() or "CATEGORY_PERSONAL"
 )
 
-# If true, also require the message to still be in INBOX.
-# NOTE: Gmail "Category" unread counts can include messages that are no longer in INBOX.
-# Keeping INBOX in the filter can dramatically reduce the number of messages returned.
 PROCESS_INBOX_ONLY = os.environ.get("PROCESS_INBOX_ONLY", "false").lower() in (
     "1",
     "true",
@@ -68,7 +64,6 @@ PROCESS_INBOX_ONLY = os.environ.get("PROCESS_INBOX_ONLY", "false").lower() in (
     "on",
 )
 
-# If true, only process UNREAD messages in /run-labeler
 PROCESS_UNREAD_ONLY = os.environ.get("PROCESS_UNREAD_ONLY", "true").lower() in (
     "1",
     "true",
@@ -76,23 +71,6 @@ PROCESS_UNREAD_ONLY = os.environ.get("PROCESS_UNREAD_ONLY", "true").lower() in (
     "on",
 )
 
-# sender-email learning config
-LL_LABEL_PREFIX = os.environ.get("LL_LABEL_PREFIX", "@LL-")
-try:
-    SENDER_RULES_MAX_PER_LABEL = int(os.environ.get("SENDER_RULES_MAX_PER_LABEL", "200"))
-    if SENDER_RULES_MAX_PER_LABEL <= 0:
-        SENDER_RULES_MAX_PER_LABEL = 200
-except ValueError:
-    SENDER_RULES_MAX_PER_LABEL = 200
-
-SENDER_RULES_SKIP_FREE_DOMAINS = os.environ.get("SENDER_RULES_SKIP_FREE_DOMAINS", "false").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-
-# Downloadable run log (single file overwritten each run)
 RUN_LOG_DIR = os.environ.get("RUN_LOG_DIR", "/tmp/label-logic-runs")
 RUN_LOG_FILENAME = os.environ.get("RUN_LOG_FILENAME", "last_run.jsonl")
 
@@ -112,10 +90,6 @@ def _utc_ts() -> str:
 
 
 def _ms_epoch_to_iso(ms: str | int | None) -> str | None:
-    """
-    Gmail internalDate is milliseconds since epoch (string).
-    Return ISO 8601 (UTC) like 2026-01-31T01:22:00Z.
-    """
     if ms is None:
         return None
     try:
@@ -334,25 +308,6 @@ def api_delete_rule(rule_id):
     return jsonify({"status": "deleted"})
 
 
-@rules_bp.route("/api/gmail-labels", methods=["GET"])
-def api_gmail_labels():
-    try:
-        service = get_gmail_service_for_current_user()
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 401
-    except Exception as e:
-        logger.exception("Gmail auth failed when fetching Gmail labels")
-        return jsonify({"error": f"Gmail auth failed: {e}"}), 500
-
-    try:
-        resp = service.users().labels().list(userId="me").execute()
-        labels = resp.get("labels", [])
-        return jsonify({"labels": labels})
-    except HttpError as e:
-        logger.exception("Gmail labels list failed")
-        return jsonify({"error": f"Gmail error: {e}"}), 500
-
-
 @rules_bp.route("/api/labels", methods=["GET"])
 def api_labels_counts():
     try:
@@ -549,9 +504,9 @@ def run_labeler():
         except Exception:
             logger.exception("Failed to apply label %s to message %s", label_to_apply, msg_id)
 
-    # optional sender-rule sync
+    # ✅ FIX: pass the Gmail service into the sync function
     try:
-        sync_sender_email_rules_from_ll_labels()
+        sync_sender_email_rules_from_ll_labels(service)
     except Exception:
         logger.exception("sync_sender_email_rules_from_ll_labels failed")
 
