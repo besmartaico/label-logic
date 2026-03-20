@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}All Rules — Label Logic{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <div class="page-title mb-0"><i class="bi bi-list-ul"></i> All Rules</div>
+  <div class="d-flex gap-2">
+    <button class="btn btn-sm btn-outline-secondary" id="learn-rules-btn"><i class="bi bi-cpu me-1"></i>Learn Rules from Emails</button>
+    <a href="/rule-editor" class="btn btn-primary btn-sm"><i class="bi bi-plus-circle me-1"></i>New Rule</a>
+  </div>
+</div>
+<div class="row g-3 mb-4">
+  <div class="col-auto"><div class="stat-chip"><div class="stat-val" id="total-rules-count">—</div><div class="stat-label">Total Rules</div></div></div>
+  <div class="col-auto"><div class="stat-chip"><div class="stat-val" id="active-rules-count" style="color:#58d68d">—</div><div class="stat-label">Active</div></div></div>
+  <div class="col-auto"><div class="stat-chip"><div class="stat-val" id="label-groups-count">—</div><div class="stat-label">Labels</div></div></div>
+</div>
+<div id="learn-status" class="mb-3"></div>
+<div class="d-flex gap-2 mb-4">
+  <input type="text" id="rules-search" class="form-control" placeholder="Search rules by label, from, subject..." style="max-width:400px" />
+  <select id="rules-filter" class="form-select" style="max-width:180px">
+    <option value="all">All rules</option>
+    <option value="active">Active only</option>
+    <option value="inactive">Inactive only</option>
+  </select>
+</div>
+<div id="rules-container">
+  <div class="text-center py-5" style="color:var(--txm)">
+    <div class="spinner-border text-secondary mb-3"></div>
+    <div>Loading rules…</div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='rule_list.js') }}"></script>{% endblock %}
