@@ -4,7 +4,7 @@
 <div class="d-flex justify-content-between align-items-center mb-4">
   <div class="page-title mb-0"><i class="bi bi-list-ul"></i> All Rules</div>
   <div class="d-flex gap-2">
-    <button class="btn btn-sm btn-outline-secondary" id="learn-rules-btn"><i class="bi bi-cpu me-1"></i>Learn Rules from Emails</button>
+    <button class="btn btn-sm btn-outline-secondary" id="learn-rules-btn"><i class="bi bi-cpu me-1"></i>Learn Rules</button>
     <a href="/rule-editor" class="btn btn-primary btn-sm"><i class="bi bi-plus-circle me-1"></i>New Rule</a>
   </div>
 </div>
@@ -15,8 +15,8 @@
 </div>
 <div id="learn-status" class="mb-3"></div>
 <div class="d-flex gap-2 mb-4">
-  <input type="text" id="rules-search" class="form-control" placeholder="Search rules by label, from, subject..." style="max-width:400px" />
-  <select id="rules-filter" class="form-select" style="max-width:180px">
+  <input type="text" id="rules-search" class="form-control" placeholder="Search by label, from, subject..." style="max-width:400px" />
+  <select id="rules-filter" class="form-select" style="max-width:160px">
     <option value="all">All rules</option>
     <option value="active">Active only</option>
     <option value="inactive">Inactive only</option>
@@ -25,8 +25,13 @@
 <div id="rules-container">
   <div class="text-center py-5" style="color:var(--txm)">
     <div class="spinner-border text-secondary mb-3"></div>
-    <div>Loading rules…</div>
+    <div>Loading rules...</div>
   </div>
 </div>
+<style>
+  .form-switch .form-check-input{width:2.2em;height:1.1em;cursor:pointer}
+  .group-toggle-row{display:flex;align-items:center;gap:1.5rem;margin-left:auto}
+  .group-toggle-label{font-size:.78rem;color:var(--txt2);display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
+</style>
 {% endblock %}
 {% block scripts %}<script src="{{ url_for('static', filename='rule_list.js') }}"></script>{% endblock %}
