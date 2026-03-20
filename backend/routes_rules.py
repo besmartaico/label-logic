@@ -708,7 +708,21 @@ def init_default_labels():
 @rules_bp.route("/learn-rules", methods=["POST"])
 def learn_rules():
     try:
-        created = learn_rules_from_labeled_emails()
+        service = get_gmail_service_for_current_user()
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 401
+    except Exception as e:
+        logger.exception("Gmail auth failed in learn_rules")
+        return jsonify({"error": f"Gmail auth failed: {e}"}), 500
+    try:
+        allowed = get_allowed_ai_labels()
+        created = learn_rules_from_labeled_emails(
+            service=service,
+            allowed_labels=allowed,
+            max_per_label=100,
+            min_domain_count=2,
+            min_subject_token_count=3,
+        )
         return jsonify({"status": "ok", "created": created})
     except Exception:
         logger.exception("learn_rules failed")
