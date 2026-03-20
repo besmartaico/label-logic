@@ -113,11 +113,13 @@ def auth_google():
         logger.exception("Failed to build OAuth flow in /auth/google")
         return jsonify({"error": str(e)}), 500
 
+    # Suppress PKCE - server-side web apps use standard auth code flow
+    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "0"
+    flow.code_verifier = None
     auth_url, state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
-        code_challenge_method=None,
     )
     session["state"] = state
     return redirect(auth_url)
