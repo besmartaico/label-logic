@@ -4,42 +4,104 @@
   <meta charset="utf-8" />
   <title>{% block title %}Label Logic{% endblock %}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link
-    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
-    rel="stylesheet"
-  />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
+  <style>
+    :root{--bg:#0f0f0f;--bg2:#1a1a1a;--card:#1e1e1e;--cardh:#252525;--bdr:#333;--mar:#7b1f2e;--marl:#9e2b3d;--marb:#c0392b;--txt:#e8e8e8;--txt2:#a0a0a0;--txm:#666}
+    body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',system-ui,sans-serif}
+    .navbar{background:#111!important;border-bottom:1px solid var(--bdr);padding:.6rem 1rem}
+    .navbar-brand{font-weight:700;font-size:1.2rem;color:#fff!important;display:flex;align-items:center;gap:10px}
+    .navbar-brand img{width:28px;height:28px;border-radius:6px}
+    .nav-link{color:var(--txt2)!important;font-size:.9rem;padding:.45rem .9rem!important;border-radius:6px;transition:all .2s;display:flex;align-items:center;gap:6px}
+    .nav-link:hover{color:#fff!important;background:rgba(255,255,255,.06)}
+    .nav-link.active{color:#fff!important;background:var(--mar)!important}
+    .card{background:var(--card);border:1px solid var(--bdr);border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,.4)}
+    .card-header{background:var(--cardh);border-bottom:1px solid var(--bdr);padding:.85rem 1.2rem;font-weight:600;border-radius:10px 10px 0 0!important}
+    .card-body{padding:1.2rem}
+    .table{color:var(--txt)}
+    .table thead th{color:var(--txt2);font-size:.78rem;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--bdr);font-weight:500;padding:.6rem .75rem}
+    .table tbody td{border-bottom:1px solid #2a2a2a;vertical-align:middle;padding:.65rem .75rem;font-size:.88rem}
+    .table tbody tr:hover{background:rgba(255,255,255,.03)}
+    .table-striped>tbody>tr:nth-of-type(odd)>*{--bs-table-bg-type:rgba(255,255,255,.02)}
+    .form-control,.form-select{background:#252525;border:1px solid #3a3a3a;color:var(--txt);border-radius:7px;padding:.5rem .85rem;font-size:.9rem}
+    .form-control:focus,.form-select:focus{background:#2a2a2a;border-color:var(--marl);color:#fff;box-shadow:0 0 0 3px rgba(123,31,46,.25)}
+    .form-control::placeholder{color:var(--txm)}
+    .form-label{font-size:.82rem;font-weight:500;color:var(--txt2);margin-bottom:.35rem;text-transform:uppercase;letter-spacing:.04em}
+    .form-check-input{background-color:#333;border-color:#555}
+    .form-check-input:checked{background-color:var(--mar);border-color:var(--mar)}
+    .btn-primary{background:var(--mar);border-color:var(--mar);font-weight:500}
+    .btn-primary:hover{background:var(--marl);border-color:var(--marl)}
+    .btn-outline-primary{color:var(--marb);border-color:var(--mar)}
+    .btn-outline-primary:hover{background:var(--mar);border-color:var(--mar);color:#fff}
+    .btn-outline-secondary{color:var(--txt2);border-color:#444}
+    .btn-outline-secondary:hover{background:#333;border-color:#555;color:#fff}
+    .btn-outline-danger{color:#e57373;border-color:#7b3333}
+    .btn-outline-danger:hover{background:#7b3333;border-color:#7b3333;color:#fff}
+    .btn{border-radius:7px;font-size:.85rem;padding:.4rem .9rem;transition:all .2s}
+    .btn-sm{padding:.3rem .7rem;font-size:.8rem}
+    .page-title{font-size:1.4rem;font-weight:700;margin-bottom:1.5rem;display:flex;align-items:center;gap:10px}
+    .page-title i{color:var(--marb)}
+    .status-msg{font-size:.82rem;padding:.5rem .75rem;border-radius:6px;margin-top:.5rem}
+    .status-msg.success{background:rgba(39,174,96,.15);color:#58d68d;border:1px solid rgba(39,174,96,.2)}
+    .status-msg.error{background:rgba(192,57,43,.15);color:#e57373;border:1px solid rgba(192,57,43,.2)}
+    .status-msg.info{background:rgba(255,255,255,.05);color:var(--txt2);border:1px solid var(--bdr)}
+    .rule-group-header{background:rgba(123,31,46,.15);border:1px solid rgba(123,31,46,.25);border-radius:8px;padding:.5rem 1rem;margin-bottom:.5rem;margin-top:1rem;display:flex;align-items:center;gap:8px;font-weight:600;font-size:.9rem}
+    .rule-group-header i{color:var(--marb)}
+    .run-stats{display:flex;gap:1rem;flex-wrap:wrap;margin-top:.75rem}
+    .stat-chip{background:rgba(255,255,255,.05);border:1px solid var(--bdr);border-radius:8px;padding:.5rem 1rem;text-align:center;min-width:90px}
+    .stat-chip .stat-val{font-size:1.5rem;font-weight:700;color:#fff}
+    .stat-chip .stat-label{font-size:.72rem;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em}
+    .badge-unread{background:rgba(123,31,46,.3);color:#e57373;border:1px solid rgba(123,31,46,.5);border-radius:5px;padding:2px 7px;font-size:.75rem}
+    .badge-total{background:rgba(255,255,255,.07);color:var(--txt2);border-radius:5px;padding:2px 7px;font-size:.75rem}
+    .spinner-sm{width:1rem;height:1rem;border-width:2px}
+    a{color:#c0392b}a:hover{color:#e74c3c}
+    ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:var(--bg2)}::-webkit-scrollbar-thumb{background:#444;border-radius:3px}
+  </style>
 </head>
-<body class="bg-light">
-
-<nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4">
-  <div class="container-fluid">
-    <a class="navbar-brand" href="#">Label Logic</a>
-    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navMain">
-      <span class="navbar-toggler-icon"></span>
-    </button>
-    <div class="collapse navbar-collapse" id="navMain">
-      <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-        <li class="nav-item">
-          <a class="nav-link {% if request.path.startswith('/rules') %}active{% endif %}" href="/rules">
-            Rules
-          </a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link {% if request.path.startswith('/relabel') %}active{% endif %}" href="/relabel">
-            Relabel
-          </a>
-        </li>
-      </ul>
+<body>
+  <nav class="navbar navbar-expand-lg">
+    <div class="container-fluid">
+      <a class="navbar-brand" href="/rules">
+        <img src="https://www.besmartai.co/favicon.ico" alt="" onerror="this.style.display='none'" />
+        Label Logic
+      </a>
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navMain" style="border-color:#444;color:#aaa;">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <div class="collapse navbar-collapse" id="navMain">
+        <ul class="navbar-nav me-auto mb-2 mb-lg-0 gap-1">
+          <li class="nav-item">
+            <a class="nav-link {% if request.path == '/rules' or request.path == '/' %}active{% endif %}" href="/rules">
+              <i class="bi bi-play-circle"></i> Run Labeler
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link {% if request.path == '/labels' %}active{% endif %}" href="/labels">
+              <i class="bi bi-tags"></i> Labels
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link {% if request.path == '/rule-editor' %}active{% endif %}" href="/rule-editor">
+              <i class="bi bi-pencil-square"></i> Create Rule
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link {% if request.path == '/rule-list' %}active{% endif %}" href="/rule-list">
+              <i class="bi bi-list-ul"></i> All Rules
+            </a>
+          </li>
+        </ul>
+        <a href="/logout" class="nav-link" style="color:var(--txm)!important;font-size:.8rem">
+          <i class="bi bi-box-arrow-right"></i> Logout
+        </a>
+      </div>
     </div>
+  </nav>
+  <div class="container py-4">
+    {% block content %}{% endblock %}
   </div>
-</nav>
-
-<div class="container">
-  {% block content %}{% endblock %}
-</div>
-
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script src="{{ url_for('static', filename='main.js') }}"></script>
-{% block scripts %}{% endblock %}
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="{{ url_for('static', filename='main.js') }}"></script>
+  {% block scripts %}{% endblock %}
 </body>
 </html>
