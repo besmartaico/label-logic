@@ -539,13 +539,16 @@ def run_labeler():
         received_at = _human_received_at(full)
 
         # Skip emails that already have a user-applied label (not a system label).
-        # Gmail system labels are all-uppercase (INBOX, UNREAD, CATEGORY_PERSONAL, etc.).
-        # User labels have at least one lowercase character.
+        # Gmail user-created label IDs always start with "Label_" followed by digits.
+        # All built-in Gmail system labels are plain uppercase words or CATEGORY_* prefixed.
+        GMAIL_SYSTEM_LABELS = {
+            "INBOX", "UNREAD", "STARRED", "IMPORTANT", "SENT", "DRAFT",
+            "SPAM", "TRASH", "CHAT", "CATEGORY_PERSONAL", "CATEGORY_SOCIAL",
+            "CATEGORY_PROMOTIONS", "CATEGORY_UPDATES", "CATEGORY_FORUMS",
+        }
         already_user_labeled = any(
-            not lid.replace("-", "").replace("_", "").replace("/", "").isupper()
+            lid.startswith("Label_")
             for lid in pre_label_ids
-            if not lid.startswith("CATEGORY_")
-            and lid not in ("INBOX", "UNREAD", "STARRED", "IMPORTANT", "SENT", "DRAFT", "SPAM", "TRASH")
         )
         if already_user_labeled:
             if fp:
