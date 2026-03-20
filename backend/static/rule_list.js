@@ -45,19 +45,20 @@ function renderRules(rules){
         <i class="bi bi-tag-fill"></i>
         <span style="color:var(--txt);font-size:.95rem">${escH(label)}</span>
         <span style="font-size:.72rem;color:var(--txm)">${rs.length} rule${rs.length!==1?'s':''}</span>
-        <div class="ms-auto d-flex align-items-center gap-3" onclick="event.stopPropagation()">
-          <div class="d-flex flex-column align-items-center gap-1" title="Toggle all rules active for this label">
-            <span style="font-size:.7rem;color:var(--txt2);line-height:1">All Active</span>
-            <div class="form-check form-switch mb-0">
+        <div class="ms-auto d-flex align-items-center" onclick="event.stopPropagation()">
+          <div class="d-flex flex-column align-items-center" style="width:65px">
+            <span style="font-size:.7rem;color:var(--txt2);line-height:1;margin-bottom:2px">All Active</span>
+            <div class="form-check form-switch mb-0 d-flex justify-content-center">
               <input class="form-check-input group-active-cb" type="checkbox" role="switch" data-gid="${gid}" ${allActive?'checked':''} style="cursor:pointer;margin-top:0">
             </div>
           </div>
-          <div class="d-flex flex-column align-items-center gap-1" title="Toggle all rules mark-as-read for this label">
-            <span style="font-size:.7rem;color:var(--txt2);line-height:1">All Mark Read</span>
-            <div class="form-check form-switch mb-0">
+          <div class="d-flex flex-column align-items-center" style="width:75px">
+            <span style="font-size:.7rem;color:var(--txt2);line-height:1;margin-bottom:2px">All Read</span>
+            <div class="form-check form-switch mb-0 d-flex justify-content-center">
               <input class="form-check-input group-read-cb" type="checkbox" role="switch" data-gid="${gid}" ${allRead?'checked':''} style="cursor:pointer;margin-top:0">
             </div>
           </div>
+          <div style="width:80px"></div>
         </div>
       </div>
       <div class="group-body" data-gid="${gid}" style="display:${isCollapsed?'none':''}">
@@ -91,8 +92,10 @@ function renderRules(rules){
                       </div>
                     </td>
                     <td style="text-align:right">
-                      <a href="/rule-editor?edit=${r.id}" class="btn btn-sm btn-outline-primary me-1" title="Edit"><i class="bi bi-pencil"></i></a>
-                      <button class="btn btn-sm btn-outline-danger del-btn" data-id="${r.id}" title="Delete"><i class="bi bi-trash"></i></button>
+                      <div class="d-flex gap-1 justify-content-end">
+                        <a href="/rule-editor?edit=${r.id}" class="btn btn-sm btn-outline-primary" title="Edit"><i class="bi bi-pencil"></i></a>
+                        <button class="btn btn-sm btn-outline-danger del-btn" data-id="${r.id}" title="Delete"><i class="bi bi-trash"></i></button>
+                      </div>
                     </td>
                   </tr>`).join('')}
                 </tbody>
