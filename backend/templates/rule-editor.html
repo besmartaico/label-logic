@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Create Rule — Label Logic{% endblock %}
+{% block content %}
+<div class="page-title"><i class="bi bi-pencil-square"></i> Create / Edit Rule</div>
+
+<div class="row g-4">
+  <div class="col-lg-6">
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span id="form-card-title"><i class="bi bi-plus-circle me-2" style="color:var(--maroon-bright)"></i>New Rule</span>
+        <button class="btn btn-sm btn-outline-secondary" id="clear-btn"><i class="bi bi-x-circle me-1"></i>Clear</button>
+      </div>
+      <div class="card-body">
+        <form id="rule-form">
+          <div class="mb-3">
+            <label class="form-label">Label Name</label>
+            <input class="form-control" id="label-name" placeholder="@LL-Finance" required />
+            <div class="mt-1" style="font-size:0.78rem;color:var(--text-muted)">Use @LL- prefix for Label Logic labels</div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label"><i class="bi bi-person-fill me-1"></i>From contains</label>
+            <input class="form-control" id="from-contains" placeholder="newsletter@example.com or @example.com" />
+          </div>
+          <div class="mb-3">
+            <label class="form-label"><i class="bi bi-chat-left-text me-1"></i>Subject contains</label>
+            <input class="form-control" id="subject-contains" placeholder="invoice, receipt, alert..." />
+          </div>
+          <div class="mb-3">
+            <label class="form-label"><i class="bi bi-body-text me-1"></i>Body contains</label>
+            <input class="form-control" id="body-contains" placeholder="payment due, unsubscribe..." />
+          </div>
+          <div class="d-flex gap-4 mb-3">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="is-active" checked />
+              <label class="form-check-label" for="is-active" style="font-size:0.88rem;color:var(--text-primary)">Active</label>
+            </div>
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="mark-as-read" />
+              <label class="form-check-label" for="mark-as-read" style="font-size:0.88rem;color:var(--text-primary)">Mark as read when matched</label>
+            </div>
+          </div>
+          <div class="d-flex gap-2">
+            <button class="btn btn-primary flex-grow-1" type="submit">
+              <i class="bi bi-check-circle me-1"></i><span id="submit-btn-text">Save Rule</span>
+            </button>
+          </div>
+        </form>
+        <div id="rule-status" class="mt-3"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-6">
+    <div class="card mb-3">
+      <div class="card-header"><i class="bi bi-info-circle me-2" style="color:var(--maroon-bright)"></i>How Rules Work</div>
+      <div class="card-body" style="font-size:0.85rem;color:var(--text-secondary);">
+        <p>Rules are checked in order. The <strong style="color:var(--text-primary)">first matching rule</strong> wins — the email gets that label.</p>
+        <p>Match conditions use <strong style="color:var(--text-primary)">OR</strong> logic — if From OR Subject OR Body matches, the rule fires.</p>
+        <p>Leave a field blank to ignore it. At least one field must be filled.</p>
+        <p class="mb-0">Emails that don't match any rule are passed to <strong style="color:var(--text-primary)">AI</strong> for labeling.</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><i class="bi bi-lightbulb me-2" style="color:var(--maroon-bright)"></i>Example Rules</div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table mb-0" style="font-size:0.82rem;">
+            <thead><tr><th>Label</th><th>From Contains</th><th>Subject Contains</th></tr></thead>
+            <tbody>
+              <tr><td><span style="color:#c0392b">@LL-Finance</span></td><td>bank.com</td><td></td></tr>
+              <tr><td><span style="color:#c0392b">@LL-Newsletters</span></td><td></td><td>unsubscribe</td></tr>
+              <tr><td><span style="color:#c0392b">@LL-Receipts</span></td><td></td><td>receipt, order</td></tr>
+              <tr><td><span style="color:#c0392b">@LL-Work</span></td><td>@mycompany.com</td><td></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='rule_editor.js') }}"></script>{% endblock %}
