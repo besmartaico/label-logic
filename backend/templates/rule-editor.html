@@ -2,78 +2,58 @@
 {% block title %}Create Rule — Label Logic{% endblock %}
 {% block content %}
 <div class="page-title"><i class="bi bi-pencil-square"></i> Create / Edit Rule</div>
-
-<div class="row g-4">
-  <div class="col-lg-6">
+<div class="row justify-content-center">
+  <div class="col-lg-7">
     <div class="card">
       <div class="card-header d-flex justify-content-between align-items-center">
-        <span id="form-card-title"><i class="bi bi-plus-circle me-2" style="color:var(--maroon-bright)"></i>New Rule</span>
+        <span id="form-card-title"><i class="bi bi-plus-circle me-2" style="color:var(--marb)"></i>New Rule</span>
         <button class="btn btn-sm btn-outline-secondary" id="clear-btn"><i class="bi bi-x-circle me-1"></i>Clear</button>
       </div>
       <div class="card-body">
         <form id="rule-form">
           <div class="mb-3">
-            <label class="form-label">Label Name</label>
-            <input class="form-control" id="label-name" placeholder="@LL-Finance" required />
-            <div class="mt-1" style="font-size:0.78rem;color:var(--text-muted)">Use @LL- prefix for Label Logic labels</div>
+            <label class="form-label" style="color:var(--txt2)">Label Name</label>
+            <input class="form-control" id="label-name" placeholder="@LL-Finance" required style="color:var(--txt);background:#252525;border-color:#3a3a3a" />
+            <div class="mt-1" style="font-size:.78rem;color:var(--txm)">Use @LL- prefix for Label Logic managed labels</div>
           </div>
           <div class="mb-3">
-            <label class="form-label"><i class="bi bi-person-fill me-1"></i>From contains</label>
-            <input class="form-control" id="from-contains" placeholder="newsletter@example.com or @example.com" />
+            <label class="form-label" style="color:var(--txt2)">From contains</label>
+            <input class="form-control" id="from-contains" placeholder="newsletter@example.com or @example.com" style="color:var(--txt);background:#252525;border-color:#3a3a3a" />
           </div>
           <div class="mb-3">
-            <label class="form-label"><i class="bi bi-chat-left-text me-1"></i>Subject contains</label>
-            <input class="form-control" id="subject-contains" placeholder="invoice, receipt, alert..." />
+            <label class="form-label" style="color:var(--txt2)">Subject contains</label>
+            <input class="form-control" id="subject-contains" placeholder="invoice, receipt, alert..." style="color:var(--txt);background:#252525;border-color:#3a3a3a" />
           </div>
           <div class="mb-3">
-            <label class="form-label"><i class="bi bi-body-text me-1"></i>Body contains</label>
-            <input class="form-control" id="body-contains" placeholder="payment due, unsubscribe..." />
+            <label class="form-label" style="color:var(--txt2)">Body contains</label>
+            <input class="form-control" id="body-contains" placeholder="payment due, unsubscribe..." style="color:var(--txt);background:#252525;border-color:#3a3a3a" />
           </div>
-          <div class="d-flex gap-4 mb-3">
-            <div class="form-check">
-              <input class="form-check-input" type="checkbox" id="is-active" checked />
-              <label class="form-check-label" for="is-active" style="font-size:0.88rem;color:var(--text-primary)">Active</label>
+          <div class="d-flex gap-4 mb-4 p-3" style="background:rgba(255,255,255,.03);border:1px solid var(--bdr);border-radius:8px">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" role="switch" id="is-active" checked />
+              <label class="form-check-label" for="is-active" style="color:var(--txt)">Active</label>
             </div>
-            <div class="form-check">
-              <input class="form-check-input" type="checkbox" id="mark-as-read" />
-              <label class="form-check-label" for="mark-as-read" style="font-size:0.88rem;color:var(--text-primary)">Mark as read when matched</label>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" role="switch" id="mark-as-read" />
+              <label class="form-check-label" for="mark-as-read" style="color:var(--txt)">Mark as read when matched</label>
             </div>
           </div>
           <div class="d-flex gap-2">
             <button class="btn btn-primary flex-grow-1" type="submit">
               <i class="bi bi-check-circle me-1"></i><span id="submit-btn-text">Save Rule</span>
             </button>
+            <a href="/rule-list" class="btn btn-outline-secondary">View All Rules</a>
           </div>
         </form>
         <div id="rule-status" class="mt-3"></div>
       </div>
     </div>
-  </div>
-
-  <div class="col-lg-6">
-    <div class="card mb-3">
-      <div class="card-header"><i class="bi bi-info-circle me-2" style="color:var(--maroon-bright)"></i>How Rules Work</div>
-      <div class="card-body" style="font-size:0.85rem;color:var(--text-secondary);">
-        <p>Rules are checked in order. The <strong style="color:var(--text-primary)">first matching rule</strong> wins — the email gets that label.</p>
-        <p>Match conditions use <strong style="color:var(--text-primary)">OR</strong> logic — if From OR Subject OR Body matches, the rule fires.</p>
-        <p>Leave a field blank to ignore it. At least one field must be filled.</p>
-        <p class="mb-0">Emails that don't match any rule are passed to <strong style="color:var(--text-primary)">AI</strong> for labeling.</p>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-header"><i class="bi bi-lightbulb me-2" style="color:var(--maroon-bright)"></i>Example Rules</div>
-      <div class="card-body p-0">
-        <div class="table-responsive">
-          <table class="table mb-0" style="font-size:0.82rem;">
-            <thead><tr><th>Label</th><th>From Contains</th><th>Subject Contains</th></tr></thead>
-            <tbody>
-              <tr><td><span style="color:#c0392b">@LL-Finance</span></td><td>bank.com</td><td></td></tr>
-              <tr><td><span style="color:#c0392b">@LL-Newsletters</span></td><td></td><td>unsubscribe</td></tr>
-              <tr><td><span style="color:#c0392b">@LL-Receipts</span></td><td></td><td>receipt, order</td></tr>
-              <tr><td><span style="color:#c0392b">@LL-Work</span></td><td>@mycompany.com</td><td></td></tr>
-            </tbody>
-          </table>
-        </div>
+    <div class="card mt-3">
+      <div class="card-header"><i class="bi bi-info-circle me-2" style="color:var(--marb)"></i>How Rules Work</div>
+      <div class="card-body" style="font-size:.85rem;color:var(--txt2)">
+        <p>Rules are checked in order. The <strong style="color:var(--txt)">first matching rule</strong> wins — that email gets that label and is removed from inbox.</p>
+        <p>Match conditions use <strong style="color:var(--txt)">OR logic</strong> — if From OR Subject OR Body matches, the rule fires. Leave fields blank to ignore them.</p>
+        <p class="mb-0">Emails with no matching rule are passed to <strong style="color:var(--txt)">AI</strong> for labeling.</p>
       </div>
     </div>
   </div>
