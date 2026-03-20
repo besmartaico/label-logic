@@ -56,6 +56,12 @@
     .spinner-sm{width:1rem;height:1rem;border-width:2px}
     a{color:#c0392b}a:hover{color:#e74c3c}
     ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:var(--bg2)}::-webkit-scrollbar-thumb{background:#444;border-radius:3px}
+    /* Nuclear dark table overrides — beat Bootstrap specificity */
+    body .table{color:var(--txt)!important;--bs-table-bg:var(--card)!important;--bs-table-striped-bg:rgba(255,255,255,.02)!important;--bs-table-hover-bg:rgba(255,255,255,.04)!important;--bs-table-border-color:#2a2a2a!important;--bs-table-color:var(--txt)!important}
+    body .table>:not(caption)>*>*{background-color:var(--card)!important;color:var(--txt)!important;border-bottom-color:#2a2a2a!important}
+    body .table thead>tr>th,body .table thead>tr>td{background-color:var(--cardh)!important;color:var(--txt2)!important;border-bottom-color:#3a3a3a!important}
+    body .table tbody>tr:hover>*{background-color:rgba(255,255,255,.04)!important;color:var(--txt)!important}
+    body .table-striped>tbody>tr:nth-of-type(odd)>*{background-color:rgba(255,255,255,.02)!important}
   </style>
 </head>
 <body>
