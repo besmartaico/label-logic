@@ -207,6 +207,18 @@ def rules_page():
 def relabel_page():
     return render_template("relabel.html")
 
+@rules_bp.route("/labels", methods=["GET"])
+def labels_page():
+    return render_template("labels.html")
+
+@rules_bp.route("/rule-editor", methods=["GET"])
+def rule_editor_page():
+    return render_template("rule-editor.html")
+
+@rules_bp.route("/rule-list", methods=["GET"])
+def rule_list_page():
+    return render_template("rule-list.html")
+
 
 @rules_bp.route("/api/allowed-ai-labels", methods=["GET"])
 def api_allowed_ai_labels():
@@ -525,6 +537,24 @@ def run_labeler():
         pre_label_ids = full.get("labelIds", []) or []
         pre_categories = _extract_gmail_categories(pre_label_ids)
         received_at = _human_received_at(full)
+
+        # Skip emails that already have a user-applied label (not a system label).
+        # Gmail system labels are all-uppercase (INBOX, UNREAD, CATEGORY_PERSONAL, etc.).
+        # User labels have at least one lowercase character.
+        already_user_labeled = any(
+            not lid.replace("-", "").replace("_", "").replace("/", "").isupper()
+            for lid in pre_label_ids
+            if not lid.startswith("CATEGORY_")
+            and lid not in ("INBOX", "UNREAD", "STARRED", "IMPORTANT", "SENT", "DRAFT", "SPAM", "TRASH")
+        )
+        if already_user_labeled:
+            if fp:
+                _log_line(fp, {
+                    "ts": _utc_ts(), "event": "skipped_already_labeled",
+                    "gmail_id": gmail_id, "sender": sender, "subject": subject,
+                    "label_ids": pre_label_ids,
+                })
+            continue
 
         matched_label = None
         matched_rule_mark_read = False
