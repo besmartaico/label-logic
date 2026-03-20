@@ -117,6 +117,7 @@ def auth_google():
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
+        code_challenge_method=None,
     )
     session["state"] = state
     return redirect(auth_url)
