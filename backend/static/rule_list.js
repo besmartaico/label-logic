@@ -97,6 +97,7 @@ function renderRules(rules){
                 <thead>
                   <tr>
                     <th style="width:35px">#</th>
+                    <th style="width:60px">Source</th>
                     <th>From</th><th>Subject</th><th>Body</th>
                     <th style="width:65px;text-align:center" title="Active"><i class="bi bi-toggle-on"></i> Active</th>
                     <th style="width:65px;text-align:center" title="Mark Read"><i class="bi bi-envelope-open"></i> Read</th>
@@ -108,6 +109,10 @@ function renderRules(rules){
                 <tbody>
                   ${rs.map(r=>`<tr data-id="${r.id}" style="opacity:${r.is_active?1:.45}">
                     <td style="font-size:.78rem">${r.id}</td>
+                    <td>${r.created_by==='ai'
+                      ? '<span style="background:rgba(59,130,246,.18);color:#60a5fa;border:1px solid rgba(59,130,246,.3);border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:600">AI</span>'
+                      : '<span style="background:rgba(255,255,255,.07);color:var(--txt2);border:1px solid #3a3a3a;border-radius:4px;padding:1px 6px;font-size:.72rem">User</span>'
+                    }</td>
                     <td>${pill(r.from_contains)}</td>
                     <td>${pill(r.subject_contains)}</td>
                     <td>${pill(r.body_contains)}</td>
