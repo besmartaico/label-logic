@@ -24,7 +24,6 @@ function setForm(r){
   document.getElementById('star-email').checked=!!r.star_email;
   document.getElementById('rule-form').dataset.editingId=r.id;
   document.getElementById('form-card-title').innerHTML='<i class="bi bi-pencil me-2" style="color:var(--marb)"></i>Editing Rule #'+r.id;
-  document.getElementById('submit-btn-text').textContent='Update Rule';
 }
 
 function clearForm(){
@@ -34,12 +33,15 @@ function clearForm(){
   document.getElementById('star-email').checked=false;
   delete document.getElementById('rule-form').dataset.editingId;
   document.getElementById('form-card-title').innerHTML='<i class="bi bi-plus-circle me-2" style="color:var(--marb)"></i>New Rule';
-  document.getElementById('submit-btn-text').textContent='Save Rule';
   showStatus('rule-status','','');
 }
 
+function resetBtn(btn, isEditing){
+  btn.disabled=false;
+  btn.innerHTML='<i class="bi bi-check-circle me-1"></i>'+(isEditing?'Update Rule':'Save Rule');
+}
+
 document.addEventListener('DOMContentLoaded',async()=>{
-  // Pre-fill label name from URL param (from rule-list + button)
   const params=new URLSearchParams(window.location.search);
   const editId=params.get('edit');
   const labelParam=params.get('label');
@@ -78,10 +80,11 @@ document.addEventListener('DOMContentLoaded',async()=>{
         'success'
       );
       if(!editingId)clearForm();
-    }catch(e){showStatus('rule-status','Error: '+e.message,'error');}
-    finally{
-      btn.disabled=false;
-      btn.innerHTML='<i class="bi bi-check-circle me-1"></i><span id="submit-btn-text">'+(document.getElementById('rule-form').dataset.editingId?'Update Rule':'Save Rule')+'</span>';
+    }catch(e){
+      showStatus('rule-status','Error: '+e.message,'error');
+    }finally{
+      // Restore button without referencing submit-btn-text span (may not exist after innerHTML swap)
+      resetBtn(btn, !!document.getElementById('rule-form').dataset.editingId);
     }
   });
 });
