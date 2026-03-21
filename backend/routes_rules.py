@@ -9,7 +9,7 @@ try:
 except Exception:  # pragma: no cover
     ZoneInfo = None
 
-from flask import Blueprint, render_template, jsonify, request, send_file
+from flask import Blueprint, render_template, jsonify, request, send_file, session
 from googleapiclient.errors import HttpError
 
 from db import get_db_connection, record_labeled_email, record_ai_suggestion
@@ -25,6 +25,52 @@ from rule_learner import learn_rules_from_labeled_emails, sync_sender_email_rule
 logger = logging.getLogger(__name__)
 
 rules_bp = Blueprint("rules", __name__)
+
+def _migrate_rules_table():
+    """Add new columns to rules table if missing, and backfill existing rows."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        # Add boolean columns
+        for col, default_val in [("keep_in_inbox", "FALSE"), ("star_email", "FALSE")]:
+            cur.execute(f"""
+                DO $ BEGIN
+                  IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='rules' AND column_name='{col}'
+                  ) THEN
+                    ALTER TABLE rules ADD COLUMN {col} BOOLEAN NOT NULL DEFAULT {default_val};
+                  END IF;
+                END $;
+            """)
+        # Add google_user_id TEXT column
+        cur.execute("""
+            DO $ BEGIN
+              IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='rules' AND column_name='google_user_id'
+              ) THEN
+                ALTER TABLE rules ADD COLUMN google_user_id TEXT;
+              END IF;
+            END $;
+        """)
+        # Backfill: assign all existing NULL-user rules to jefferyweeks@gmail.com
+        cur.execute("""
+            UPDATE rules
+            SET google_user_id = (
+                SELECT google_user_id FROM google_accounts
+                WHERE email = 'jefferyweeks@gmail.com'
+                LIMIT 1
+            )
+            WHERE google_user_id IS NULL;
+        """)
+        conn.commit()
+        conn.close()
+        logger.info("_migrate_rules_table complete")
+    except Exception:
+        logger.exception("_migrate_rules_table failed")
+
+_migrate_rules_table()
 
 # Env-based behavior
 ARCHIVE_RULE_LABELED = os.environ.get("ARCHIVE_RULE_LABELED", "true").lower() in (
