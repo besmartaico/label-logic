@@ -28,33 +28,21 @@ rules_bp = Blueprint("rules", __name__)
 
 def _migrate_rules_table():
     """Add new columns to rules table if missing, and backfill existing rows."""
+    conn = get_db_connection()
+    cur = conn.cursor()
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        # Add boolean columns
-        for col, default_val in [("keep_in_inbox", "FALSE"), ("star_email", "FALSE")]:
-            cur.execute(f"""
-                DO $ BEGIN
-                  IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name='rules' AND column_name='{col}'
-                  ) THEN
-                    ALTER TABLE rules ADD COLUMN {col} BOOLEAN NOT NULL DEFAULT {default_val};
-                  END IF;
-                END $;
-            """)
-        # Add google_user_id TEXT column
-        cur.execute("""
-            DO $ BEGIN
-              IF NOT EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_name='rules' AND column_name='google_user_id'
-              ) THEN
-                ALTER TABLE rules ADD COLUMN google_user_id TEXT;
-              END IF;
-            END $;
-        """)
-        # Backfill: assign all existing NULL-user rules to jefferyweeks@gmail.com
+        # Add each column individually — ignore error if it already exists
+        for ddl in [
+            "ALTER TABLE rules ADD COLUMN keep_in_inbox BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE rules ADD COLUMN star_email BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE rules ADD COLUMN google_user_id TEXT",
+        ]:
+            try:
+                cur.execute(ddl)
+                conn.commit()
+            except Exception:
+                conn.rollback()  # column already exists — that's fine
+        # Backfill all existing NULL-owner rules to jefferyweeks@gmail.com
         cur.execute("""
             UPDATE rules
             SET google_user_id = (
@@ -62,13 +50,14 @@ def _migrate_rules_table():
                 WHERE email = 'jefferyweeks@gmail.com'
                 LIMIT 1
             )
-            WHERE google_user_id IS NULL;
+            WHERE google_user_id IS NULL
         """)
         conn.commit()
-        conn.close()
         logger.info("_migrate_rules_table complete")
     except Exception:
         logger.exception("_migrate_rules_table failed")
+    finally:
+        conn.close()
 
 _migrate_rules_table()
 
