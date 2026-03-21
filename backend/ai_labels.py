@@ -62,7 +62,7 @@ def get_allowed_ai_labels():
 # -----------------------------
 
 
-def ai_suggest_label(sender, subject, body):
+def ai_suggest_label(sender, subject, body, extra_instructions=""):
     """
     Use OpenAI to suggest a label from the allowed list.
     """
@@ -73,6 +73,7 @@ def ai_suggest_label(sender, subject, body):
     label_map = {lbl.lower(): lbl for lbl in allowed_labels}
     label_list = ", ".join(allowed_labels)
 
+    extra_hint = f"\n\nAdditional instructions from the user:\n{extra_instructions.strip()}" if extra_instructions and extra_instructions.strip() else ""
     system_prompt = (
         "You are an email classifier for a personal inbox. "
         "You must choose exactly one label from the allowed list, "
