@@ -120,7 +120,10 @@ def apply_label_to_message(
         logger.warning("Could not get/create label_id for '%s'", label_name)
         return
 
-    body = {"addLabelIds": [label_id]}
+    add_ids = [label_id]
+    if star:
+        add_ids.append("STARRED")
+    body = {"addLabelIds": add_ids}
     if star:
         body["addLabelIds"].append("STARRED")
     remove_ids = []
