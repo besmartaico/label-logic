@@ -16,7 +16,7 @@
     .navbar-brand img{width:28px;height:28px;border-radius:6px}
     .nav-link{color:var(--txt2)!important;font-size:.9rem;padding:.45rem .9rem!important;border-radius:6px;transition:all .2s;display:flex;align-items:center;gap:6px}
     .nav-link:hover{color:#fff!important;background:rgba(255,255,255,.06)}
-    .nav-link.active{color:#fff!important;background:var(--mar)!important}
+    .nav-link.active{color:#fff!important;background:rgba(255,255,255,.12)!important;border:1px solid rgba(255,255,255,.15)!important}
     .card{background:var(--card);border:1px solid var(--bdr);border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,.4)}
     .card-header{background:var(--cardh);border-bottom:1px solid var(--bdr);padding:.85rem 1.2rem;font-weight:600;border-radius:10px 10px 0 0!important}
     .card-body{padding:1.2rem}
@@ -98,6 +98,11 @@
           <li class="nav-item">
             <a class="nav-link {% if request.path == '/rule-list' %}active{% endif %}" href="/rule-list">
               <i class="bi bi-list-ul"></i> All Rules
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link {% if request.path == '/schedule' %}active{% endif %}" href="/schedule">
+              <i class="bi bi-clock"></i> Schedule
             </a>
           </li>
         </ul>
