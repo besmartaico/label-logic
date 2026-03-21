@@ -222,6 +222,7 @@ def db_row_to_rule(row):
         "keep_in_inbox": bool(row.get("keep_in_inbox")),
         "star_email": bool(row.get("star_email")),
         "google_user_id": row.get("google_user_id"),
+        "created_by": row.get("created_by") or "user",
     }
 
 
