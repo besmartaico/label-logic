@@ -28,14 +28,34 @@
             <label class="form-label" style="color:var(--txt2)">Body contains</label>
             <input class="form-control" id="body-contains" placeholder="payment due, unsubscribe..." style="color:var(--txt);background:#252525;border-color:#3a3a3a" />
           </div>
-          <div class="d-flex gap-4 mb-4 p-3" style="background:rgba(255,255,255,.03);border:1px solid var(--bdr);border-radius:8px">
-            <div class="form-check form-switch">
-              <input class="form-check-input" type="checkbox" role="switch" id="is-active" checked />
-              <label class="form-check-label" for="is-active" style="color:var(--txt)">Active</label>
-            </div>
-            <div class="form-check form-switch">
-              <input class="form-check-input" type="checkbox" role="switch" id="mark-as-read" />
-              <label class="form-check-label" for="mark-as-read" style="color:var(--txt)">Mark as read when matched</label>
+          <div class="p-3 mb-3" style="background:rgba(255,255,255,.03);border:1px solid var(--bdr);border-radius:8px">
+            <div class="row g-3">
+              <div class="col-6">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" role="switch" id="is-active" checked />
+                  <label class="form-check-label" for="is-active" style="color:var(--txt)">Active</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" role="switch" id="mark-as-read" />
+                  <label class="form-check-label" for="mark-as-read" style="color:var(--txt)">Mark as Read</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" role="switch" id="keep-in-inbox" />
+                  <label class="form-check-label" for="keep-in-inbox" style="color:var(--txt)">Keep in Inbox</label>
+                  <div style="font-size:.75rem;color:var(--txm)">Label but don't archive</div>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" role="switch" id="star-email" />
+                  <label class="form-check-label" for="star-email" style="color:var(--txt)"><i class="bi bi-star-fill me-1" style="color:#f0c040;font-size:.85rem"></i>Star Email</label>
+                  <div style="font-size:.75rem;color:var(--txm)">Add star when labeled</div>
+                </div>
+              </div>
             </div>
           </div>
           <div class="d-flex gap-2">
@@ -51,9 +71,10 @@
     <div class="card mt-3">
       <div class="card-header"><i class="bi bi-info-circle me-2" style="color:var(--marb)"></i>How Rules Work</div>
       <div class="card-body" style="font-size:.85rem;color:var(--txt2)">
-        <p>Rules are checked in order. The <strong style="color:var(--txt)">first matching rule</strong> wins — that email gets that label and is removed from inbox.</p>
-        <p>Match conditions use <strong style="color:var(--txt)">OR logic</strong> — if From OR Subject OR Body matches, the rule fires. Leave fields blank to ignore them.</p>
-        <p class="mb-0">Emails with no matching rule are passed to <strong style="color:var(--txt)">AI</strong> for labeling.</p>
+        <p>Rules are checked in order. The <strong style="color:var(--txt)">first matching rule</strong> wins.</p>
+        <p>Match conditions use <strong style="color:var(--txt)">OR logic</strong> — From OR Subject OR Body triggers the rule.</p>
+        <p><strong style="color:var(--txt)">Keep in Inbox</strong> labels the email but leaves it in your inbox (useful for important emails you want to track).</p>
+        <p class="mb-0">Emails with no matching rule go to <strong style="color:var(--txt)">AI</strong> for labeling.</p>
       </div>
     </div>
   </div>
