@@ -42,6 +42,33 @@ def _migrate_rules_table():
                 conn.commit()
             except Exception:
                 conn.rollback()  # column already exists — that's fine
+        # Delete single-word subject-only rules (too broad — e.g. "men", "sale")
+        try:
+            cur.execute("""
+                DELETE FROM rules
+                WHERE subject_contains IS NOT NULL
+                  AND subject_contains != ''
+                  AND TRIM(subject_contains) NOT LIKE '% %'
+                  AND TRIM(subject_contains) NOT LIKE '%@%'
+                  AND TRIM(subject_contains) NOT LIKE '%.%'
+                  AND (from_contains IS NULL OR from_contains = '')
+                  AND (body_contains IS NULL OR body_contains = '')
+            """)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        # Add user_settings table for per-user preferences (AI instructions etc.)
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    google_user_id TEXT PRIMARY KEY,
+                    ai_instructions TEXT,
+                    updated_at TEXT
+                )
+            """)
+            conn.commit()
+        except Exception:
+            conn.rollback()
         # Backfill all existing NULL-owner rules to jefferyweeks@gmail.com
         cur.execute("""
             UPDATE rules
@@ -512,6 +539,16 @@ def run_labeler():
         logger.exception("Sender-email rule sync failed; continuing with existing rules/AI.")
 
     run_user_id = session.get("google_user_id")
+    # Load this user's AI instructions
+    try:
+        _conn_ai = get_db_connection()
+        _cur_ai = _conn_ai.cursor()
+        _cur_ai.execute("SELECT ai_instructions FROM user_settings WHERE google_user_id = %s", (run_user_id,))
+        _ai_row = _cur_ai.fetchone()
+        _run_ai_instructions = _ai_row["ai_instructions"] if _ai_row else ""
+        _conn_ai.close()
+    except Exception:
+        _run_ai_instructions = ""
     conn_r = get_db_connection()
     cur_r = conn_r.cursor()
     cur_r.execute("SELECT * FROM rules WHERE is_active = TRUE AND google_user_id = %s ORDER BY id;", (run_user_id,))
@@ -659,7 +696,7 @@ def run_labeler():
 
         if not matched_label:
             # NOTE: this is still one AI request per email (we’ll batch next step)
-            label, conf = ai_suggest_label(sender, subject, body)
+            label, conf = ai_suggest_label(sender, subject, body, extra_instructions=_run_ai_instructions)
             if label:
                 apply_label_to_message(
                     service,
@@ -753,6 +790,34 @@ def init_default_labels():
 
     return jsonify({"status": "ok", "count": len(ensured), "ensured_labels": ensured})
 
+
+@rules_bp.route("/api/ai-instructions", methods=["GET"])
+def api_get_ai_instructions():
+    user_id = session.get("google_user_id")
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT ai_instructions FROM user_settings WHERE google_user_id = %s", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    return jsonify({"ai_instructions": row["ai_instructions"] if row else ""})
+
+@rules_bp.route("/api/ai-instructions", methods=["POST"])
+def api_save_ai_instructions():
+    user_id = session.get("google_user_id")
+    data = request.get_json(force=True, silent=True) or {}
+    instructions = (data.get("ai_instructions") or "").strip()
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO user_settings (google_user_id, ai_instructions, updated_at)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (google_user_id) DO UPDATE
+        SET ai_instructions = EXCLUDED.ai_instructions, updated_at = EXCLUDED.updated_at
+    """, (user_id, instructions, now))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok"})
 
 @rules_bp.route("/learn-rules", methods=["POST"])
 def learn_rules():
