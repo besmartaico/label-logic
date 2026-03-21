@@ -111,6 +111,7 @@ def apply_label_to_message(
     label_name,
     remove_from_inbox=False,
     mark_as_read=False,
+    star=False,
 ):
     from googleapiclient.errors import HttpError
 
@@ -120,6 +121,8 @@ def apply_label_to_message(
         return
 
     body = {"addLabelIds": [label_id]}
+    if star:
+        body["addLabelIds"].append("STARRED")
     remove_ids = []
 
     if remove_from_inbox:
