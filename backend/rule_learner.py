@@ -113,11 +113,13 @@ def _insert_rule(
     body_contains: str = "",
     is_active: bool = True,
     mark_as_read: bool = False,
+    google_user_id=None,
+    created_by: str = "user",
 ) -> int:
     """
     Insert rule if not exists. Returns 1 if inserted, 0 if skipped.
     """
-    if _rule_exists(label_name, from_contains, subject_contains, body_contains):
+    if _rule_exists(label_name, from_contains, subject_contains, body_contains, google_user_id):
         return 0
 
     from datetime import datetime
