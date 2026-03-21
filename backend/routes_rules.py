@@ -299,6 +299,23 @@ def rule_list_page():
     return render_template("rule-list.html")
 
 
+@rules_bp.route("/api/debug-session", methods=["GET"])
+def api_debug_session():
+    """Temporary debug endpoint to diagnose auth issues."""
+    user_id = session.get("google_user_id")
+    email = session.get("email", "")
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # Check google_accounts rows
+    cur.execute("SELECT google_user_id, email, CASE WHEN credentials_json IS NULL THEN 'NULL' WHEN credentials_json = '' THEN 'EMPTY' ELSE 'HAS_CREDS' END as creds_status FROM google_accounts ORDER BY updated_at DESC LIMIT 10")
+    accounts = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return jsonify({
+        "session_user_id": user_id,
+        "session_email": email,
+        "google_accounts": accounts,
+    })
+
 @rules_bp.route("/api/allowed-ai-labels", methods=["GET"])
 def api_allowed_ai_labels():
     return jsonify({"allowed_ai_labels": get_allowed_ai_labels()})
