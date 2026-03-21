@@ -223,6 +223,7 @@ def learn_rules_from_labeled_emails(
     max_per_label: int = 50,
     min_domain_count: int = 3,
     min_subject_token_count: int = 3,
+    google_user_id: str = None,
 ) -> int:
     """
     Look at emails inside each allowed label and propose new rules.
@@ -258,7 +259,8 @@ def learn_rules_from_labeled_emails(
         # Domain rules
         for dom, cnt in domains.items():
             if cnt >= min_domain_count:
-                created += _insert_rule(label_name, from_contains=f"@{dom}")
+                created += _insert_rule(label_name, from_contains=f"@{dom}",
+                                        google_user_id=google_user_id, created_by="learned")
 
         # Subject token rules
         for tok, cnt in tokens.items():
