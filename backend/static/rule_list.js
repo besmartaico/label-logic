@@ -237,10 +237,15 @@ document.addEventListener('DOMContentLoaded',async()=>{
     try{
       const res=await fetch('/learn-rules',{method:'POST',credentials:'same-origin'});
       const text=await res.text();
-      if(text.trim().startsWith('<')){throw new Error('Session may have expired — please refresh the page.');}
+      if(text.trim().startsWith('<')){throw new Error('Session expired — please log out and log back in.');}
       const d=JSON.parse(text);
-      if(d.error)throw new Error(d.error);
-      showStatus('learn-status',`✓ Created ${d.created||0} new rule(s).`+(d.created===0?' (Needs 2+ emails from same domain in a labeled folder.)':''),'success');
+      if(d.error){
+        if(d.error.includes('Not logged in') || res.status===401){
+          throw new Error('Google session expired — please <a href="/logout" style="color:#f87171">log out</a> and log back in.');
+        }
+        throw new Error(d.error);
+      }
+      showStatus('learn-status',`✓ Created ${d.created||0} new rule(s).`+(d.created===0?' (Needs 2+ emails from same domain in a @LL- label.)':''),'success');
       await loadRules();
     }catch(e){showStatus('learn-status','Error: '+e.message,'error');}
     finally{btn.disabled=false;btn.innerHTML='<i class="bi bi-cpu me-1"></i>Learn Rules';}
