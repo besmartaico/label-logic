@@ -130,18 +130,20 @@ def _insert_rule(
     cur.execute(
         """
         INSERT INTO rules
-          (label_name, from_contains, subject_contains, body_contains,
-           is_active, mark_as_read, created_at, updated_at)
+          (google_user_id, label_name, from_contains, subject_contains, body_contains,
+           is_active, mark_as_read, created_by, created_at, updated_at)
         VALUES
-          (%s, %s, %s, %s, %s, %s, %s, %s);
+          (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
         """,
         (
+            google_user_id,
             label_name,
             (from_contains or "").strip() or None,
             (subject_contains or "").strip() or None,
             (body_contains or "").strip() or None,
             bool(is_active),
             bool(mark_as_read),
+            created_by,
             now,
             now,
         ),
