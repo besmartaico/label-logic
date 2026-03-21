@@ -152,6 +152,7 @@ def db_row_to_rule(row):
         "mark_as_read": bool(row.get("mark_as_read")),
         "keep_in_inbox": bool(row.get("keep_in_inbox")),
         "star_email": bool(row.get("star_email")),
+        "google_user_id": row.get("google_user_id"),
     }
 
 
@@ -303,7 +304,8 @@ def api_update_rule(rule_id):
 def api_delete_rule(rule_id):
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("DELETE FROM rules WHERE id = %s;", (rule_id,))
+    user_id = session.get("google_user_id")
+    cur.execute("DELETE FROM rules WHERE id = %s AND google_user_id = %s;", (rule_id, user_id))
     conn.commit()
     conn.close()
     return jsonify({"status": "deleted"})
