@@ -62,6 +62,30 @@ def _tokenize_subject(subject: str) -> List[str]:
     return out
 
 
+def _delete_single_word_subject_rules() -> int:
+    """Remove any rules where subject_contains is a single word (no spaces) — too broad."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            DELETE FROM rules
+            WHERE subject_contains IS NOT NULL
+              AND subject_contains != ''
+              AND from_contains IS NULL
+              AND body_contains IS NULL
+              AND subject_contains NOT LIKE '% %'
+              AND subject_contains NOT LIKE '%@%'
+              AND subject_contains NOT LIKE '%.%'
+        """)
+        deleted = cur.rowcount
+        conn.commit()
+        conn.close()
+        return deleted
+    except Exception:
+        logger.exception("_delete_single_word_subject_rules failed")
+        return 0
+
+
 def _rule_exists(label_name: str, from_contains: str, subject_contains: str, body_contains: str) -> bool:
     conn = get_db_connection()
     cur = conn.cursor()
