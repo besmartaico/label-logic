@@ -150,6 +150,8 @@ def db_row_to_rule(row):
         "body_contains": row.get("body_contains") or "",
         "is_active": bool(row.get("is_active")),
         "mark_as_read": bool(row.get("mark_as_read")),
+        "keep_in_inbox": bool(row.get("keep_in_inbox")),
+        "star_email": bool(row.get("star_email")),
     }
 
 
