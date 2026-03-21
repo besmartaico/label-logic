@@ -86,25 +86,22 @@ def _delete_single_word_subject_rules() -> int:
         return 0
 
 
-def _rule_exists(label_name: str, from_contains: str, subject_contains: str, body_contains: str) -> bool:
+def _rule_exists(label_name: str, from_contains: str, subject_contains: str, body_contains: str, google_user_id=None) -> bool:
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT 1
-        FROM rules
-        WHERE label_name = %s
-          AND COALESCE(from_contains,'') = %s
-          AND COALESCE(subject_contains,'') = %s
-          AND COALESCE(body_contains,'') = %s
-        LIMIT 1;
-        """,
-        (label_name, from_contains or "", subject_contains or "", body_contains or ""),
-    )
+    if google_user_id:
+        cur.execute(
+            "SELECT 1 FROM rules WHERE google_user_id=%s AND label_name=%s AND COALESCE(from_contains,'')=%s AND COALESCE(subject_contains,'')=%s AND COALESCE(body_contains,'')=%s LIMIT 1;",
+            (google_user_id, label_name, from_contains or "", subject_contains or "", body_contains or ""),
+        )
+    else:
+        cur.execute(
+            "SELECT 1 FROM rules WHERE label_name=%s AND COALESCE(from_contains,'')=%s AND COALESCE(subject_contains,'')=%s AND COALESCE(body_contains,'')=%s LIMIT 1;",
+            (label_name, from_contains or "", subject_contains or "", body_contains or ""),
+        )
     row = cur.fetchone()
     conn.close()
     return bool(row)
-
 
 def _insert_rule(
     label_name: str,
@@ -269,7 +266,8 @@ def learn_rules_from_labeled_emails(
         # Subject token rules
         for tok, cnt in tokens.items():
             if cnt >= min_subject_token_count:
-                created += _insert_rule(label_name, subject_contains=tok)
+                created += _insert_rule(label_name, subject_contains=tok,
+                                        google_user_id=google_user_id, created_by="learned")
 
     return created
 
@@ -355,10 +353,10 @@ def _upsert_sender_email_rule_latest_wins(sender_email: str, label_name: str) ->
         cur.execute(
             """
             INSERT INTO rules
-              (label_name, from_contains, subject_contains, body_contains,
-               is_active, mark_as_read, created_at, updated_at)
+              (google_user_id, label_name, from_contains, subject_contains, body_contains,
+               is_active, mark_as_read, created_by, created_at, updated_at)
             VALUES
-              (%s, %s, NULL, NULL, TRUE, FALSE, %s, %s);
+              (NULL, %s, %s, NULL, NULL, TRUE, FALSE, 'learned', %s, %s);
             """,
             (label_name, sender_email, now, now),
         )
