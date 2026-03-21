@@ -30,20 +30,25 @@
         </div>
       </div>
     </div>
+
     <div class="card">
       <div class="card-header d-flex justify-content-between align-items-center">
         <span><i class="bi bi-robot me-2" style="color:var(--marb)"></i>AI Instructions</span>
-        <button class="btn btn-sm btn-primary" id="save-ai-instructions-btn">
-          <i class="bi bi-floppy me-1"></i>Save
-        </button>
+        <span style="font-size:.78rem;color:var(--txm)">Used when no rule matches</span>
       </div>
       <div class="card-body">
-        <p style="font-size:.82rem;color:var(--txt2);margin-bottom:.75rem;">
-          Tell the AI how to label emails that don't match any rule. These instructions are added to every AI labeling request.
+        <p style="font-size:.82rem;color:var(--txt2);margin-bottom:1rem;">
+          Each instruction tells the AI how to label specific types of emails. Add as many as you need.
         </p>
-        <textarea id="ai-instructions" class="form-control" rows="4"
-          placeholder="Examples:&#10;- Emails from recruiters should go to @LL-Recruiting&#10;- Any bill or invoice should go to @LL-Bills&#10;- Newsletters and marketing go to @LL-Newsletters"
-          style="color:var(--txt);background:#252525;border-color:#3a3a3a;font-size:.88rem;resize:vertical"></textarea>
+        <div id="ai-instructions-list" class="d-flex flex-column gap-2 mb-3"></div>
+        <div class="d-flex gap-2">
+          <input type="text" id="new-instruction-input" class="form-control"
+            placeholder="e.g. Emails from recruiters should go to @LL-Recruiting"
+            style="color:var(--txt);background:#252525;border-color:#3a3a3a" />
+          <button class="btn btn-outline-secondary" id="add-instruction-btn" style="white-space:nowrap">
+            <i class="bi bi-plus-circle me-1"></i>Add
+          </button>
+        </div>
         <div id="ai-instructions-status" class="mt-2"></div>
       </div>
     </div>
