@@ -216,17 +216,20 @@ def init_db():
         """
     )
 
-    # rules: user-created matching rules
+    # rules: user-created matching rules (scoped per google_user_id)
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS rules (
             id BIGSERIAL PRIMARY KEY,
+            google_user_id TEXT,
             label_name TEXT NOT NULL,
             from_contains TEXT,
             subject_contains TEXT,
             body_contains TEXT,
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
             mark_as_read BOOLEAN NOT NULL DEFAULT FALSE,
+            keep_in_inbox BOOLEAN NOT NULL DEFAULT FALSE,
+            star_email BOOLEAN NOT NULL DEFAULT FALSE,
             created_at TEXT,
             updated_at TEXT
         );
