@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Schedule — Label Logic{% endblock %}
+{% block content %}
+<div class="page-title"><i class="bi bi-clock"></i> Schedule</div>
+<div class="row justify-content-center">
+  <div class="col-lg-7">
+
+    <div id="schedule-status" class="mb-3"></div>
+
+    <div class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-play-circle me-2" style="color:var(--marb)"></i>Run Labeler</span>
+        <div class="form-check form-switch mb-0">
+          <input class="form-check-input" type="checkbox" role="switch" id="rl-enabled" style="cursor:pointer">
+          <label class="form-check-label" for="rl-enabled" style="color:var(--txt2);font-size:.85rem">Enabled</label>
+        </div>
+      </div>
+      <div class="card-body" id="rl-body">
+        <p style="font-size:.85rem;color:var(--txt2);margin-bottom:1.25rem">
+          Automatically scan your inbox and apply labels on a schedule. The schedule runs as long as this page is open in your browser.
+        </p>
+        <div class="row g-3 mb-3">
+          <div class="col-sm-6">
+            <label class="form-label">Run every</label>
+            <select class="form-select" id="rl-interval">
+              <option value="15">Every 15 minutes</option>
+              <option value="30">Every 30 minutes</option>
+              <option value="60" selected>Every 1 hour</option>
+              <option value="120">Every 2 hours</option>
+              <option value="360">Every 6 hours</option>
+              <option value="720">Every 12 hours</option>
+              <option value="1440">Every 24 hours</option>
+            </select>
+          </div>
+          <div class="col-sm-6 d-flex align-items-end">
+            <div style="font-size:.82rem;color:var(--txm)" id="rl-next-run">Not scheduled</div>
+          </div>
+        </div>
+        <div id="rl-last-run" style="font-size:.8rem;color:var(--txm)"></div>
+      </div>
+    </div>
+
+    <div class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-cpu me-2" style="color:var(--marb)"></i>Learn Rules</span>
+        <div class="form-check form-switch mb-0">
+          <input class="form-check-input" type="checkbox" role="switch" id="lr-enabled" style="cursor:pointer">
+          <label class="form-check-label" for="lr-enabled" style="color:var(--txt2);font-size:.85rem">Enabled</label>
+        </div>
+      </div>
+      <div class="card-body" id="lr-body">
+        <p style="font-size:.85rem;color:var(--txt2);margin-bottom:1.25rem">
+          Automatically scan your labeled emails and generate new rules on a schedule.
+        </p>
+        <div class="row g-3 mb-3">
+          <div class="col-sm-6">
+            <label class="form-label">Run every</label>
+            <select class="form-select" id="lr-interval">
+              <option value="60">Every 1 hour</option>
+              <option value="360">Every 6 hours</option>
+              <option value="720">Every 12 hours</option>
+              <option value="1440" selected>Every 24 hours</option>
+              <option value="10080">Every 7 days</option>
+            </select>
+          </div>
+          <div class="col-sm-6 d-flex align-items-end">
+            <div style="font-size:.82rem;color:var(--txm)" id="lr-next-run">Not scheduled</div>
+          </div>
+        </div>
+        <div id="lr-last-run" style="font-size:.8rem;color:var(--txm)"></div>
+      </div>
+    </div>
+
+    <div class="d-flex gap-2 justify-content-end">
+      <button class="btn btn-primary" id="save-schedule-btn">
+        <i class="bi bi-floppy me-1"></i>Save Schedule
+      </button>
+    </div>
+
+    <div class="card mt-4" style="background:rgba(255,255,255,.03)">
+      <div class="card-body" style="font-size:.82rem;color:var(--txm)">
+        <i class="bi bi-info-circle me-1"></i>
+        The schedule uses your browser tab to trigger runs — keep this page open for automatic scheduling.
+        Your schedule settings are saved and will be restored when you return to this page.
+      </div>
+    </div>
+
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='schedule.js') }}"></script>{% endblock %}
