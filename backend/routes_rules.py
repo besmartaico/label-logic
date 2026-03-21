@@ -57,15 +57,22 @@ def _migrate_rules_table():
             conn.commit()
         except Exception:
             conn.rollback()
-        # Add user_settings table for per-user preferences (AI instructions etc.)
+        # Add user_settings table for per-user preferences
         try:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS user_settings (
                     google_user_id TEXT PRIMARY KEY,
                     ai_instructions TEXT,
+                    schedule_config TEXT,
                     updated_at TEXT
                 )
             """)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        # Add schedule_config column if missing
+        try:
+            cur.execute("ALTER TABLE user_settings ADD COLUMN schedule_config TEXT")
             conn.commit()
         except Exception:
             conn.rollback()
@@ -545,7 +552,18 @@ def run_labeler():
         _cur_ai = _conn_ai.cursor()
         _cur_ai.execute("SELECT ai_instructions FROM user_settings WHERE google_user_id = %s", (run_user_id,))
         _ai_row = _cur_ai.fetchone()
-        _run_ai_instructions = _ai_row["ai_instructions"] if _ai_row else ""
+        raw_instructions = _ai_row["ai_instructions"] if _ai_row else None
+        if raw_instructions:
+            try:
+                items = json.loads(raw_instructions)
+                if isinstance(items, list):
+                    _run_ai_instructions = "\n".join(item["text"] for item in items if item.get("text"))
+                else:
+                    _run_ai_instructions = str(raw_instructions)
+            except Exception:
+                _run_ai_instructions = str(raw_instructions)
+        else:
+            _run_ai_instructions = ""
         _conn_ai.close()
     except Exception:
         _run_ai_instructions = ""
@@ -799,13 +817,27 @@ def api_get_ai_instructions():
     cur.execute("SELECT ai_instructions FROM user_settings WHERE google_user_id = %s", (user_id,))
     row = cur.fetchone()
     conn.close()
-    return jsonify({"ai_instructions": row["ai_instructions"] if row else ""})
+    raw = row["ai_instructions"] if row else None
+    # Support both old plain text and new JSON list format
+    if raw:
+        try:
+            items = json.loads(raw)
+            if not isinstance(items, list):
+                items = [{"id": 1, "text": raw}]
+        except Exception:
+            items = [{"id": 1, "text": raw}]
+    else:
+        items = []
+    return jsonify({"items": items})
 
 @rules_bp.route("/api/ai-instructions", methods=["POST"])
 def api_save_ai_instructions():
     user_id = session.get("google_user_id")
     data = request.get_json(force=True, silent=True) or {}
-    instructions = (data.get("ai_instructions") or "").strip()
+    # Expects {"items": [{"id": ..., "text": "..."}]}
+    items = data.get("items", [])
+    if not isinstance(items, list):
+        items = []
     now = datetime.utcnow().isoformat(timespec="seconds")
     conn = get_db_connection()
     cur = conn.cursor()
@@ -814,10 +846,51 @@ def api_save_ai_instructions():
         VALUES (%s, %s, %s)
         ON CONFLICT (google_user_id) DO UPDATE
         SET ai_instructions = EXCLUDED.ai_instructions, updated_at = EXCLUDED.updated_at
-    """, (user_id, instructions, now))
+    """, (user_id, json.dumps(items), now))
     conn.commit()
     conn.close()
     return jsonify({"status": "ok"})
+
+@rules_bp.route("/api/schedule", methods=["GET"])
+def api_get_schedule():
+    user_id = session.get("google_user_id")
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT schedule_config FROM user_settings WHERE google_user_id = %s", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    raw = row["schedule_config"] if row else None
+    default = {"run_labeler": {"enabled": False, "interval_minutes": 60},
+               "learn_rules": {"enabled": False, "interval_minutes": 1440}}
+    if raw:
+        try:
+            cfg = json.loads(raw)
+        except Exception:
+            cfg = default
+    else:
+        cfg = default
+    return jsonify(cfg)
+
+@rules_bp.route("/api/schedule", methods=["POST"])
+def api_save_schedule():
+    user_id = session.get("google_user_id")
+    data = request.get_json(force=True, silent=True) or {}
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO user_settings (google_user_id, schedule_config, updated_at)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (google_user_id) DO UPDATE
+        SET schedule_config = EXCLUDED.schedule_config, updated_at = EXCLUDED.updated_at
+    """, (user_id, json.dumps(data), now))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+@rules_bp.route("/schedule", methods=["GET"])
+def schedule_page():
+    return render_template("schedule.html")
 
 @rules_bp.route("/learn-rules", methods=["POST"])
 def learn_rules():
