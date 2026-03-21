@@ -42,6 +42,12 @@ def _migrate_rules_table():
                 conn.commit()
             except Exception:
                 conn.rollback()  # column already exists — that's fine
+        # Add created_by column
+        try:
+            cur.execute("ALTER TABLE rules ADD COLUMN created_by TEXT NOT NULL DEFAULT 'user'")
+            conn.commit()
+        except Exception:
+            conn.rollback()
         # Delete single-word subject-only rules (too broad — e.g. "men", "sale")
         try:
             cur.execute("""
@@ -903,6 +909,7 @@ def learn_rules():
         logger.exception("Gmail auth failed in learn_rules")
         return jsonify({"error": f"Gmail auth failed: {e}"}), 500
     try:
+        user_id_for_learn = session.get("google_user_id")
         allowed = get_allowed_ai_labels()
         created = learn_rules_from_labeled_emails(
             service=service,
@@ -910,6 +917,7 @@ def learn_rules():
             max_per_label=100,
             min_domain_count=2,
             min_subject_token_count=3,
+            google_user_id=user_id_for_learn,
         )
         return jsonify({"status": "ok", "created": created})
     except Exception:
