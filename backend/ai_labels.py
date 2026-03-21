@@ -77,7 +77,10 @@ def ai_suggest_label(sender, subject, body, extra_instructions=""):
     system_prompt = (
         "You are an email classifier for a personal inbox. "
         "You must choose exactly one label from the allowed list, "
-        "or 'None' if the email does not clearly fit any category."
+        "or 'None' if the email does not clearly fit any category. "
+        "Do NOT classify based on a single generic word — consider the full context: sender domain, subject line, and email type. "
+        "Be specific: identify the type of email (e.g. order confirmation, job alert, bank statement, newsletter, security alert) "
+        "and match it to the most relevant label. Avoid overly broad classifications."
     )
 
     user_prompt = f"""
