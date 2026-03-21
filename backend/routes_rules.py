@@ -276,8 +276,13 @@ def api_allowed_ai_labels():
 
 @rules_bp.route("/api/rules", methods=["GET"])
 def api_get_rules():
-    rules = load_all_rules()
-    return jsonify(rules)
+    user_id = session.get("google_user_id")
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM rules WHERE google_user_id = %s ORDER BY id;", (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return jsonify([db_row_to_rule(r) for r in rows])
 
 
 @rules_bp.route("/api/rules", methods=["POST"])
@@ -517,7 +522,12 @@ def run_labeler():
     except Exception:
         logger.exception("Sender-email rule sync failed; continuing with existing rules/AI.")
 
-    rules = load_active_rules()
+    run_user_id = session.get("google_user_id")
+    conn_r = get_db_connection()
+    cur_r = conn_r.cursor()
+    cur_r.execute("SELECT * FROM rules WHERE is_active = TRUE AND google_user_id = %s ORDER BY id;", (run_user_id,))
+    rules = [db_row_to_rule(r) for r in cur_r.fetchall()]
+    conn_r.close()
     rule_count = 0
     ai_count = 0
     total = 0
