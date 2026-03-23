@@ -263,10 +263,10 @@ document.addEventListener('DOMContentLoaded',async()=>{
     const cnt = document.getElementById('bulk-count');
     if(!bar) return;
     if(selectedIds.size > 0){
-      bar.style.display = 'flex';
+      bar.setAttribute('style', bar.getAttribute('style').replace('display:none','') + ';display:flex!important');
       cnt.textContent = selectedIds.size + ' rule' + (selectedIds.size !== 1 ? 's' : '') + ' selected';
     } else {
-      bar.style.display = 'none';
+      bar.setAttribute('style', bar.getAttribute('style').replace(/display:[^;]+;?/g,'') + ';display:none!important');
     }
   }
 
