@@ -47,6 +47,8 @@ function setAllCollapsed(state){
 }
 
 function renderRules(rules){
+  if(typeof selectedIds !== "undefined") selectedIds.clear();
+
   const c=document.getElementById('rules-container');
   if(!rules.length){c.innerHTML='<div class="text-center py-5" style="color:var(--txm)"><i class="bi bi-inbox" style="font-size:2rem;display:block;margin-bottom:.5rem"></i>No rules found.</div>';return;}
   const groups={};
@@ -96,6 +98,7 @@ function renderRules(rules){
               <table class="table mb-0">
                 <thead>
                   <tr>
+                    <th style="width:28px"><input type="checkbox" id="select-all-cb" title="Select all" style="cursor:pointer;accent-color:var(--marb)"></th>
                     <th style="width:35px">#</th>
                     <th style="width:60px">Source</th>
                     <th>From</th><th>Subject</th><th>Body</th>
@@ -108,6 +111,7 @@ function renderRules(rules){
                 </thead>
                 <tbody>
                   ${rs.map(r=>`<tr data-id="${r.id}" style="opacity:${r.is_active?1:.45}">
+                    <td><input type="checkbox" class="rule-cb" data-id="${r.id}" style="cursor:pointer;accent-color:var(--marb)"></td>
                     <td style="font-size:.78rem">${r.id}</td>
                     <td>${r.created_by==='ai'
                       ? '<span style="background:rgba(59,130,246,.18);color:#60a5fa;border:1px solid rgba(59,130,246,.3);border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:600">AI</span>'
@@ -250,4 +254,75 @@ document.addEventListener('DOMContentLoaded',async()=>{
     }catch(e){showStatus('learn-status','Error: '+e.message,'error');}
     finally{btn.disabled=false;btn.innerHTML='<i class="bi bi-cpu me-1"></i>Learn Rules';}
   });
+
+  // ── Bulk selection & delete ──────────────────────────────
+  let selectedIds = new Set();
+
+  function updateBulkBar(){
+    const bar = document.getElementById('bulk-bar');
+    const cnt = document.getElementById('bulk-count');
+    if(!bar) return;
+    if(selectedIds.size > 0){
+      bar.style.display = 'flex';
+      cnt.textContent = selectedIds.size + ' rule' + (selectedIds.size !== 1 ? 's' : '') + ' selected';
+    } else {
+      bar.style.display = 'none';
+    }
+  }
+
+  document.addEventListener('change', e => {
+    if(e.target.classList.contains('rule-cb')){
+      const id = parseInt(e.target.dataset.id);
+      if(e.target.checked) selectedIds.add(id);
+      else selectedIds.delete(id);
+      updateBulkBar();
+      const all = document.querySelectorAll('.rule-cb');
+      const checked = document.querySelectorAll('.rule-cb:checked');
+      const cb = document.getElementById('select-all-cb');
+      if(cb){ cb.indeterminate = checked.length > 0 && checked.length < all.length; cb.checked = checked.length === all.length && all.length > 0; }
+    }
+    if(e.target.id === 'select-all-cb'){
+      document.querySelectorAll('.rule-cb').forEach(cb => {
+        cb.checked = e.target.checked;
+        const id = parseInt(cb.dataset.id);
+        if(e.target.checked) selectedIds.add(id);
+        else selectedIds.delete(id);
+      });
+      updateBulkBar();
+    }
+  });
+
+  document.getElementById('bulk-deselect-btn')?.addEventListener('click', () => {
+    selectedIds.clear();
+    document.querySelectorAll('.rule-cb').forEach(cb => cb.checked = false);
+    const cb = document.getElementById('select-all-cb');
+    if(cb){ cb.checked = false; cb.indeterminate = false; }
+    updateBulkBar();
+  });
+
+  document.getElementById('bulk-delete-btn')?.addEventListener('click', async () => {
+    if(selectedIds.size === 0) return;
+    const n = selectedIds.size;
+    if(!confirm('Delete ' + n + ' rule' + (n !== 1 ? 's' : '') + '? This cannot be undone.')) return;
+    const btn = document.getElementById('bulk-delete-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-sm me-1"></span>Deleting...';
+    const ids = Array.from(selectedIds);
+    let failed = 0;
+    for(const id of ids){
+      try{
+        const r = await fetch('/api/rules/' + id, {method:'DELETE', credentials:'same-origin'});
+        if(!r.ok) failed++;
+      } catch(e){ failed++; }
+    }
+    selectedIds.clear();
+    updateBulkBar();
+    await loadRules();
+    if(failed > 0) showStatus('learn-status', 'Deleted ' + (ids.length-failed) + ' rule(s). ' + failed + ' failed.', 'error');
+    else showStatus('learn-status', '\u2713 Deleted ' + ids.length + ' rule(s).', 'success');
+    setTimeout(() => showStatus('learn-status','',''), 3000);
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-trash me-1"></i>Delete Selected';
+  });
+
 });
