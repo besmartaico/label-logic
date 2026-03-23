@@ -82,6 +82,17 @@ def _migrate_rules_table():
             conn.commit()
         except Exception:
             conn.rollback()
+        # Delete subject-only rules created by AI or learned (from addresses only from now on)
+        try:
+            cur.execute("""
+                DELETE FROM rules
+                WHERE (created_by IN ('ai', 'learned') OR created_by IS NULL)
+                  AND (from_contains IS NULL OR from_contains = '')
+                  AND (subject_contains IS NOT NULL AND subject_contains != '')
+            """)
+            conn.commit()
+        except Exception:
+            conn.rollback()
         # Backfill all existing NULL-owner rules to jefferyweeks@gmail.com
         cur.execute("""
             UPDATE rules
