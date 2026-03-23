@@ -245,30 +245,17 @@ def learn_rules_from_labeled_emails(
 
     for label_id, label_name in allowed_label_ids:
         msg_ids = _list_messages_for_label(service, label_id, max_per_label)
-
         domains = Counter()
-        tokens = Counter()
-
         for mid in msg_ids:
             from_h, subj = _get_from_subject(service, mid)
             dom = _sender_domain(from_h)
             if dom:
                 domains[dom] += 1
-            for t in _tokenize_subject(subj):
-                tokens[t] += 1
-
-        # Domain rules
+        # From-domain rules only — subject rules are too broad and create false positives
         for dom, cnt in domains.items():
             if cnt >= min_domain_count:
                 created += _insert_rule(label_name, from_contains=f"@{dom}",
                                         google_user_id=google_user_id, created_by="learned")
-
-        # Subject token rules
-        for tok, cnt in tokens.items():
-            if cnt >= min_subject_token_count:
-                created += _insert_rule(label_name, subject_contains=tok,
-                                        google_user_id=google_user_id, created_by="learned")
-
     return created
 
 
