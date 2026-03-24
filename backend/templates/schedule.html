@@ -15,11 +15,11 @@
           <label class="form-check-label" for="rl-enabled" style="color:var(--txt2);font-size:.85rem">Enabled</label>
         </div>
       </div>
-      <div class="card-body" id="rl-body">
+      <div class="card-body">
         <p style="font-size:.85rem;color:var(--txt2);margin-bottom:1.25rem">
-          Automatically scan your inbox and apply labels on a schedule. The schedule runs as long as this page is open in your browser.
+          Automatically scan your inbox and apply labels on a schedule. <strong style="color:var(--txt)">Keep this page open</strong> — the scheduler runs in your browser tab.
         </p>
-        <div class="row g-3 mb-3">
+        <div class="row g-3 mb-2">
           <div class="col-sm-6">
             <label class="form-label">Run every</label>
             <select class="form-select" id="rl-interval">
@@ -32,7 +32,7 @@
             <div style="font-size:.82rem;color:var(--txm)" id="rl-next-run">Not scheduled</div>
           </div>
         </div>
-        <div id="rl-last-run" style="font-size:.8rem;color:var(--txm)"></div>
+        <div id="rl-last-run"></div>
       </div>
     </div>
 
@@ -44,11 +44,11 @@
           <label class="form-check-label" for="lr-enabled" style="color:var(--txt2);font-size:.85rem">Enabled</label>
         </div>
       </div>
-      <div class="card-body" id="lr-body">
+      <div class="card-body">
         <p style="font-size:.85rem;color:var(--txt2);margin-bottom:1.25rem">
           Automatically scan your labeled emails and generate new rules on a schedule.
         </p>
-        <div class="row g-3 mb-3">
+        <div class="row g-3 mb-2">
           <div class="col-sm-6">
             <label class="form-label">Run every</label>
             <select class="form-select" id="lr-interval">
@@ -61,7 +61,7 @@
             <div style="font-size:.82rem;color:var(--txm)" id="lr-next-run">Not scheduled</div>
           </div>
         </div>
-        <div id="lr-last-run" style="font-size:.8rem;color:var(--txm)"></div>
+        <div id="lr-last-run"></div>
       </div>
     </div>
 
@@ -74,8 +74,7 @@
     <div class="card mt-4" style="background:rgba(255,255,255,.03)">
       <div class="card-body" style="font-size:.82rem;color:var(--txm)">
         <i class="bi bi-info-circle me-1"></i>
-        The schedule uses your browser tab to trigger runs — keep this page open for automatic scheduling.
-        Your schedule settings are saved and will be restored when you return to this page.
+        The scheduler runs in your browser tab — keep this page open for automatic scheduling. Last run stats are saved and shown even after you refresh.
       </div>
     </div>
 
