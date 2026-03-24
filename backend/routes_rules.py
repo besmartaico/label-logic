@@ -76,6 +76,25 @@ def _migrate_rules_table():
             conn.commit()
         except Exception:
             conn.rollback()
+        # Add schedule_runs table to persist scheduled run history
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS schedule_runs (
+                    id BIGSERIAL PRIMARY KEY,
+                    google_user_id TEXT,
+                    run_type TEXT,
+                    processed INTEGER DEFAULT 0,
+                    rule_labeled INTEGER DEFAULT 0,
+                    ai_labeled INTEGER DEFAULT 0,
+                    skipped INTEGER DEFAULT 0,
+                    rules_created INTEGER DEFAULT 0,
+                    ran_at TEXT,
+                    created_at TEXT
+                )
+            """)
+            conn.commit()
+        except Exception:
+            conn.rollback()
         # Add schedule_config column if missing
         try:
             cur.execute("ALTER TABLE user_settings ADD COLUMN schedule_config TEXT")
@@ -882,6 +901,53 @@ def api_save_ai_instructions():
         ON CONFLICT (google_user_id) DO UPDATE
         SET ai_instructions = EXCLUDED.ai_instructions, updated_at = EXCLUDED.updated_at
     """, (user_id, json.dumps(items), now))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+@rules_bp.route("/api/schedule-runs", methods=["GET"])
+def api_get_schedule_runs():
+    user_id = session.get("google_user_id")
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # Get last run for each type
+    cur.execute("""
+        SELECT DISTINCT ON (run_type) run_type, processed, rule_labeled, ai_labeled,
+               skipped, rules_created, ran_at
+        FROM schedule_runs
+        WHERE google_user_id = %s
+        ORDER BY run_type, ran_at DESC
+    """, (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+    result = {}
+    for r in rows:
+        result[r['run_type']] = dict(r)
+    return jsonify(result)
+
+@rules_bp.route("/api/schedule-runs", methods=["POST"])
+def api_save_schedule_run():
+    user_id = session.get("google_user_id")
+    data = request.get_json(force=True, silent=True) or {}
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO schedule_runs
+            (google_user_id, run_type, processed, rule_labeled, ai_labeled,
+             skipped, rules_created, ran_at, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """, (
+        user_id,
+        data.get('run_type', 'run_labeler'),
+        data.get('processed', 0),
+        data.get('rule_labeled', 0),
+        data.get('ai_labeled', 0),
+        data.get('skipped', 0),
+        data.get('rules_created', 0),
+        now,
+        now,
+    ))
     conn.commit()
     conn.close()
     return jsonify({"status": "ok"})
