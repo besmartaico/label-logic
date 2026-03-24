@@ -987,6 +987,12 @@ def api_save_schedule():
     """, (user_id, json.dumps(data), now))
     conn.commit()
     conn.close()
+    # Update the server-side APScheduler immediately so changes take effect now
+    try:
+        from scheduler import reschedule_user
+        reschedule_user(user_id, data)
+    except Exception:
+        logger.exception("reschedule_user failed after saving schedule config")
     return jsonify({"status": "ok"})
 
 @rules_bp.route("/schedule", methods=["GET"])
