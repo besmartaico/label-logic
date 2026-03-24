@@ -17,7 +17,7 @@
       </div>
       <div class="card-body">
         <p style="font-size:.85rem;color:var(--txt2);margin-bottom:1.25rem">
-          Automatically scan your inbox and apply labels on a schedule. <strong style="color:var(--txt)">Keep this page open</strong> — the scheduler runs in your browser tab.
+          Automatically scan your inbox and apply labels on a schedule. Runs on the server — no browser required.
         </p>
         <div class="row g-3 mb-2">
           <div class="col-sm-6">
@@ -29,7 +29,7 @@
             </select>
           </div>
           <div class="col-sm-6 d-flex align-items-end">
-            <div style="font-size:.82rem;color:var(--txm)" id="rl-next-run">Not scheduled</div>
+            <div style="font-size:.82rem;color:var(--txm)" id="rl-next-run"></div>
           </div>
         </div>
         <div id="rl-last-run"></div>
@@ -46,7 +46,7 @@
       </div>
       <div class="card-body">
         <p style="font-size:.85rem;color:var(--txt2);margin-bottom:1.25rem">
-          Automatically scan your labeled emails and generate new rules on a schedule.
+          Automatically scan your labeled emails and generate new rules on a schedule. Runs on the server — no browser required.
         </p>
         <div class="row g-3 mb-2">
           <div class="col-sm-6">
@@ -58,23 +58,24 @@
             </select>
           </div>
           <div class="col-sm-6 d-flex align-items-end">
-            <div style="font-size:.82rem;color:var(--txm)" id="lr-next-run">Not scheduled</div>
+            <div style="font-size:.82rem;color:var(--txm)" id="lr-next-run"></div>
           </div>
         </div>
         <div id="lr-last-run"></div>
       </div>
     </div>
 
-    <div class="d-flex gap-2 justify-content-end">
+    <div class="d-flex gap-2 justify-content-end mb-4">
       <button class="btn btn-primary" id="save-schedule-btn">
         <i class="bi bi-floppy me-1"></i>Save Schedule
       </button>
     </div>
 
-    <div class="card mt-4" style="background:rgba(255,255,255,.03)">
+    <div class="card" style="background:rgba(255,255,255,.03)">
       <div class="card-body" style="font-size:.82rem;color:var(--txm)">
-        <i class="bi bi-info-circle me-1"></i>
-        The scheduler runs in your browser tab — keep this page open for automatic scheduling. Last run stats are saved and shown even after you refresh.
+        <i class="bi bi-server me-1"></i>
+        Schedules run entirely on the server — jobs fire automatically whether or not your browser is open.
+        Last run stats are saved to the database and shown here even after you close and reopen this page.
       </div>
     </div>
 
